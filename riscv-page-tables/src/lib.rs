@@ -199,4 +199,25 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn sv48_512_gb() {
+        let (phys_pages, host_mem) = stub_sys_memory();
+
+        let mut host_pages = host_mem.into_iter().flatten();
+        let seq_pages = SequentialPages::from_pages(host_pages.by_ref().take(1)).unwrap();
+        let mut hyp_page_table =
+            Sv48::new(seq_pages, PageOwnerId::hypervisor(), phys_pages.clone())
+                .expect("creating sv48");
+        let page = host_pages.next().unwrap();
+        let mut pte_pages = host_pages.by_ref().take(3);
+
+        let virt_base = PageAddr::new(RawAddr::supervisor_virt(0x8000_0000)).unwrap();
+        assert!(phys_pages
+            .set_page_owner(page.addr(), PageOwnerId::hypervisor())
+            .is_ok());
+        assert!(hyp_page_table
+            .map_page(virt_base, page, &mut || pte_pages.next())
+            .is_ok());
+    }
 }
