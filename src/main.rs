@@ -28,6 +28,7 @@ mod asm;
 mod guest_tracking;
 mod host_vm_loader;
 mod smp;
+mod task;
 mod trap;
 mod vm;
 mod vm_cpu;

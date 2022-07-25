@@ -5,25 +5,13 @@
 use core::arch::global_asm;
 use core::mem::size_of;
 use memoffset::offset_of;
-use page_collections::page_box::PageBox;
-use page_collections::page_vec::PageVec;
 use riscv_page_tables::Sv48;
-use riscv_pages::{AlignedPageAddr4k, PageOwnerId, PageSize4k, PhysAddr, SequentialPages};
-use riscv_regs::{hgatp, hstatus, scounteren, sstatus, HgatpHelpers};
-use riscv_regs::{
-    Exception, GeneralPurposeRegisters, GprIndex, LocalRegisterCopy, Readable, Trap, Writeable, CSR,
-};
-use sbi::Error as SbiError;
-use sbi::{self, ResetFunction, SbiMessage, SbiReturn, TeeFunction};
-
-use crate::cpu::Cpu;
-use crate::print_util::*;
-use crate::{print, println};
+use riscv_regs::{Exception, GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 
 /// Host GPR and which must be saved/restored when entering/exiting a task.
 #[derive(Default)]
 #[repr(C)]
-struct HostCpuState {
+struct HostCpuRegs {
     gprs: GeneralPurposeRegisters,
     satp: u64,
     stvec: u64,
@@ -33,16 +21,17 @@ struct HostCpuState {
 /// Task GPR and CSR state which must be saved/restored when exiting/entering a task.
 #[derive(Default)]
 #[repr(C)]
-struct TaskCpuState {
+struct TaskCpuRegs {
     gprs: GeneralPurposeRegisters,
     satp: u64,
+    sepc: u64,
 }
 
 /// CSRs written on an exit from virtualization that are used by the host to determine the cause of
 /// the trap.
 #[derive(Default)]
 #[repr(C)]
-struct TrapState {
+struct TrapRegs {
     scause: u64,
     stval: u64,
 }
@@ -51,9 +40,9 @@ struct TrapState {
 #[derive(Default)]
 #[repr(C)]
 struct TaskCpuState {
-    host_regs: HostCpuState,
-    task_regs: TaskCpuState,
-    trap_csrs: TrapState,
+    host_regs: HostCpuRegs,
+    task_regs: TaskCpuRegs,
+    trap_csrs: TrapRegs,
 }
 
 // The task context switch, defined in task.S
@@ -64,26 +53,26 @@ extern "C" {
 #[allow(dead_code)]
 const fn host_gpr_offset(index: GprIndex) -> usize {
     offset_of!(TaskCpuState, host_regs)
-        + offset_of!(HostCpuState, gprs)
+        + offset_of!(HostCpuRegs, gprs)
         + (index as usize) * size_of::<u64>()
 }
 
 #[allow(dead_code)]
 const fn task_gpr_offset(index: GprIndex) -> usize {
     offset_of!(TaskCpuState, task_regs)
-        + offset_of!(TaskCpuState, gprs)
+        + offset_of!(TaskCpuRegs, gprs)
         + (index as usize) * size_of::<u64>()
 }
 
 macro_rules! host_csr_offset {
     ($reg:tt) => {
-        offset_of!(TaskCpuState, host_regs) + offset_of!(HostCpuState, $reg)
+        offset_of!(TaskCpuState, host_regs) + offset_of!(HostCpuRegs, $reg)
     };
 }
 
 macro_rules! task_csr_offset {
     ($reg:tt) => {
-        offset_of!(TaskCpuState, task_regs) + offset_of!(TaskCpuState, $reg)
+        offset_of!(TaskCpuState, task_regs) + offset_of!(TaskCpuRegs, $reg)
     };
 }
 
@@ -161,9 +150,7 @@ impl Task {
 
         Task {
             info,
-            page_table,
-            guests: None,
-            has_run: false,
+            pages: page_table,
         }
     }
 
