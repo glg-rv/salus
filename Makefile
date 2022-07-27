@@ -90,6 +90,10 @@ guestvm:
 tellus: guestvm
 	cargo build $(CARGO_FLAGS) --package test_workloads --bin tellus --release
 
+.PHONY: memcpy
+memcpy:
+	RUSTFLAGS='-Clink-arg=-Tlds/umode.lds' cargo build --package memcpy
+
 # Runnable targets:
 #
 #  run_tellus_gdb: Run Tellus as the host VM with GDB debugging enabled.
