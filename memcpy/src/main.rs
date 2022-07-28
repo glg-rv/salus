@@ -9,5 +9,5 @@ extern crate libuser;
 
 #[no_mangle]
 extern "C" fn task_main(_data: u64) {
-    loop {}
+    panic!("");
 }

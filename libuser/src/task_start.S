@@ -7,8 +7,8 @@
 .section .text.start
 
 // The entry point for a task.
-.global _task_start
-_task_start:
+.global _start
+_start:
 
 .option push
 .option norelax
