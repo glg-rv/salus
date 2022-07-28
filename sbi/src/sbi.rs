@@ -24,6 +24,9 @@ pub use base::*;
 // The reset SBI extension
 mod reset;
 pub use reset::*;
+// The rivos-specific test extension
+mod rivos_test;
+pub use rivos_test::*;
 // The State SBI extension
 mod state;
 pub use state::*;
@@ -125,6 +128,8 @@ pub enum SbiMessage {
     Attestation(AttestationFunction),
     /// The extension for getting performance counter state.
     Pmu(PmuFunction),
+    /// Tests run by Tellus
+    RivosTest(RivosTestFunction),
 }
 
 impl SbiMessage {
@@ -145,6 +150,7 @@ impl SbiMessage {
             EXT_TEE_GUEST => TeeGuestFunction::from_regs(args).map(SbiMessage::TeeGuest),
             EXT_ATTESTATION => AttestationFunction::from_regs(args).map(SbiMessage::Attestation),
             EXT_PMU => PmuFunction::from_regs(args).map(SbiMessage::Pmu),
+            EXT_RIVOS_TEST => RivosTestFunction::from_regs(args).map(SbiMessage::RivosTest),
             _ => Err(Error::NotSupported),
         }
     }
@@ -163,6 +169,7 @@ impl SbiMessage {
             TeeGuest(_) => EXT_TEE_GUEST,
             Attestation(_) => EXT_ATTESTATION,
             Pmu(_) => EXT_PMU,
+	    RivosTest(_) => EXT_RIVOS_TEST,
         }
     }
 
@@ -182,6 +189,7 @@ impl SbiMessage {
             TeeGuest(f) => f.a6(),
             Attestation(f) => f.a6(),
             Pmu(f) => f.a6(),
+            RivosTest(f) => f.a6(),
         }
     }
 
@@ -240,7 +248,7 @@ impl SbiMessage {
     pub fn a2(&self) -> u64 {
         use SbiMessage::*;
         match self {
-            PutChar(_) => 0,
+<<<            PutChar(_) => 0,
             Base(f) => f.a2(),
             HartState(f) => f.a2(),
             Reset(f) => f.a2(),
@@ -250,6 +258,8 @@ impl SbiMessage {
             TeeGuest(f) => f.a2(),
             Attestation(f) => f.a2(),
             Pmu(f) => f.a2(),
+            RivosTest(f) => f.a2(),
+            _ => 0,
         }
     }
 
@@ -267,6 +277,8 @@ impl SbiMessage {
             TeeGuest(f) => f.a1(),
             Attestation(f) => f.a1(),
             Pmu(f) => f.a1(),
+            RivosTest(f) => f.a1(),
+            _ => 0,
         }
     }
 
@@ -284,6 +296,8 @@ impl SbiMessage {
             TeeGuest(f) => f.a0(),
             Attestation(f) => f.a0(),
             Pmu(f) => f.a0(),
+            RivosTest(f) => f.a0(),
+            _ => 0,
         }
     }
 

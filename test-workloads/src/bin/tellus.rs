@@ -27,7 +27,7 @@ use riscv_regs::{DecodedInstruction, Exception, GprIndex, Instruction, Trap, CSR
 use s_mode_utils::abort::abort;
 use s_mode_utils::ecall::ecall_send;
 use s_mode_utils::{print::*, sbi_console::SbiConsole};
-use sbi::api::{base, pmu, reset, tee_host, tee_interrupt};
+use sbi::api::{base, pmu, reset, tee_host, tee_interrupt, rivos_test};
 use sbi::{
     PmuCounterConfigFlags, PmuCounterStartFlags, PmuCounterStopFlags, PmuEventType, PmuFirmware,
     PmuHardware, SbiMessage, TeeMemoryRegion, EXT_PMU, EXT_TEE_HOST, EXT_TEE_INTERRUPT,
@@ -739,6 +739,22 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
         tee_interrupt::reclaim_imsic(imsic_file_addr).expect("Tellus - TsmReclaimImsic failed");
     }
     exercise_pmu_functionality();
+
+    // Check memcpy to see if u-mode tasks in tellus are functional
+    let src_bytes = [0x55u8; 1024];
+    let mut dst_bytes = [0xaau8; 1024];
+    // Safety: using mut ref for dst_bytes and borrowing src_bytes - safe as this is the only
+    // owner of the local data.
+    unsafe {
+        rivos_test::test_memcpy(
+            dst_bytes.as_mut_ptr(),
+            src_bytes.as_ptr(),
+            dst_bytes.len() as u64,
+        )
+        .expect("memcpy failed");
+    }
+    assert_eq!(dst_bytes, src_bytes);
+
     println!("Tellus - All OK");
     poweroff();
 }

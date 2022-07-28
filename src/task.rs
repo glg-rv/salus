@@ -146,7 +146,7 @@ pub struct Task {
 impl Task {
     /// Create a new task using the given initial page table.
     fn new(page_table: Sv48) -> Self {
-        let mut info = TaskCpuState::default();
+        let info = TaskCpuState::default();
 
         Task {
             info,

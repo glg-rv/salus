@@ -801,6 +801,7 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 active_vcpu,
             ),
             ReadFirmwareCounter(_) => Err(EcallError::Sbi(SbiError::NotSupported)),
+            SbiMessage::RivosTest(test_function) => self.handle_test(test_function, active_pages),
         }
     }
 
@@ -999,6 +1000,15 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 .into(),
             TvmInitiateFence { guest_id } => self.guest_initiate_fence(guest_id).into(),
         }
+    }
+
+    fn handle_test(
+        &self,
+        _test_func: RivosTestFunction,
+        _active_pages: &ActiveVmPages<T>,
+    ) -> EcallAction {
+        // TODO
+        EcallAction::Unhandled
     }
 
     fn get_tsm_info(

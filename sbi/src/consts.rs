@@ -15,6 +15,7 @@ pub const EXT_ATTESTATION: u64 = 0x41545354; // ATST
 pub const EXT_TEE_HOST: u64 = 0x54454548; // TEEH
 pub const EXT_TEE_INTERRUPT: u64 = 0x54454549; // TEEI
 pub const EXT_TEE_GUEST: u64 = 0x54454547; // TEEG
+pub const EXT_RIVOS_TEST: u64 = 0x00112233;
 
 pub const SBI_SUCCESS: i64 = 0;
 pub const SBI_ERR_INVALID_ADDRESS: i64 = -5;
