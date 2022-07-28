@@ -20,21 +20,10 @@ SECTIONS
         *(.text.start)
     } >ram AT>ram :text
 
-    .text : {
-        *(.text.init) *(.text .text.*)
-    } >ram AT>ram :text
-
     PROVIDE(_global_pointer = .);
 
     .rodata : {
         *(.rodata .rodata.*)
-    } >ram AT>ram :text
-
-    .extable : {
-        . = ALIGN(8);
-	PROVIDE(_extable_start = .);
-	KEEP(*(.extable))
-	PROVIDE(_extable_end = .);
     } >ram AT>ram :text
 
     .data : {

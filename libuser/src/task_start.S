@@ -6,7 +6,7 @@
 
 .section .text.start
 
-// The entry point for the boot CPU.
+// The entry point for a task.
 .global _task_start
 _task_start:
 
@@ -20,6 +20,7 @@ _task_start:
     la ra, 1f
     jr t1
 
+    j 1f
 1:
     // ecall to exit
     ecall
