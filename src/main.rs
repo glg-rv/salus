@@ -27,6 +27,7 @@ extern crate alloc;
 mod asm;
 mod guest_tracking;
 mod host_vm_loader;
+mod memcpy_task;
 mod smp;
 mod task;
 mod trap;
