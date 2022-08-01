@@ -6,6 +6,7 @@ use core::arch::asm;
 use core::cell::{RefCell, RefMut};
 use drivers::{imsic::Imsic, CpuId, CpuInfo};
 use page_tracking::{HwMemMap, HwMemRegionType, HwReservedMemType};
+use riscv_page_tables::Sv48;
 use riscv_pages::{PageSize, RawAddr, SupervisorPageAddr};
 use riscv_regs::{sstatus, ReadWriteable, CSR};
 use s_mode_utils::print::*;
@@ -28,8 +29,15 @@ pub struct PerCpu {
     online: Once<bool>,
 }
 
+/// Pages of memory allocated per CPU to run u mode tasks.
+/// TODO - size this based on a better estimate of what's needed. - can be just stack once each task
+/// can either run in place or is pre-loaded to a RX !W area.
+/// WAG - 4 for page table entries, 4 for stack, 8 for code.
+const PER_CPU_U_MODE_PAGES: u64 = 16;
+
 /// The number of pages we allocate per CPU: the CPU's stack + it's `PerCpu` structure.
-const PER_CPU_PAGES: u64 = 8;
+/// The `PerCpu` structure will be stored at then end and the stack will grow down from there.
+const PER_CPU_PAGES: u64 = 8 + PER_CPU_U_MODE_PAGES;
 
 /// The base address of the per-CPU memory region.
 static PER_CPU_BASE: Once<SupervisorPageAddr> = Once::new();
@@ -123,6 +131,30 @@ impl PerCpu {
     /// Returns a mutable reference to this CPU's VMID tracker.
     pub fn vmid_tracker_mut(&self) -> RefMut<VmIdTracker> {
         self.vmid_tracker.borrow_mut()
+    }
+
+    /// Returns the address and length of the pages set aside for u-mode usage.
+    pub fn user_mode_range(&self) -> (SupervisorPageAddr, u64) {
+        (
+            PER_CPU_BASE
+                .get()
+                .unwrap()
+                .checked_add_pages((self.cpu_id.raw() as u64) * PER_CPU_PAGES)
+                .unwrap(),
+            PER_CPU_U_MODE_PAGES,
+        )
+    }
+
+    /// Returns the pages used for the u-mode task stack on this physical CPU.
+    /// These are the first `PER_CPU_U_MODE_PAGES` of the per-cpu region.
+    pub fn user_mode_stack(&self) -> *mut u8 {
+        PER_CPU_BASE
+            .get()
+            .unwrap()
+            .checked_add_pages((self.cpu_id.raw() as u64) * PER_CPU_PAGES)
+            .and_then(|p| p.checked_add_pages(PER_CPU_U_MODE_PAGES))
+            .unwrap()
+            .bits() as *mut u8
     }
 }
 
