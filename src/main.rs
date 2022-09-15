@@ -567,6 +567,8 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     // into the host VM.
     let mut hyp_mem = HypPageAlloc::new(mem_map);
 
+    // TODO: init cpu tasks here.
+
     // Find and initialize the IOMMU.
     match Iommu::probe_from(PcieRoot::get(), &mut || {
         hyp_mem.take_pages_for_host_state(1).into_iter().next()
