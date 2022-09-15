@@ -6,7 +6,7 @@ use core::arch::global_asm;
 use core::mem::size_of;
 use memoffset::offset_of;
 use riscv_page_tables::Sv48;
-use riscv_regs::{Exception, GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
+use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 
 /// Host GPR and which must be saved/restored when entering/exiting a task.
 #[derive(Default)]
@@ -173,7 +173,6 @@ impl Task {
 
     /// Run this guest until it requests an exit or an interrupt is received for the host.
     fn run(&mut self) -> Trap {
-        use Exception::*;
         loop {
             self.run_to_exit();
             match Trap::from_scause(self.info.trap_csrs.scause).unwrap() {

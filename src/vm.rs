@@ -669,6 +669,7 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 self.handle_attestation_msg(attestation_func, active_vcpu.active_pages())
             }
             SbiMessage::Pmu(pmu_func) => self.handle_pmu_msg(pmu_func, active_vcpu).into(),
+            SbiMessage::RivosTest(test_function) => self.handle_test(test_function, active_vcpu),
         }
     }
 
@@ -801,7 +802,6 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 active_vcpu,
             ),
             ReadFirmwareCounter(_) => Err(EcallError::Sbi(SbiError::NotSupported)),
-            SbiMessage::RivosTest(test_function) => self.handle_test(test_function, active_pages),
         }
     }
 
@@ -1005,7 +1005,7 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
     fn handle_test(
         &self,
         _test_func: RivosTestFunction,
-        _active_pages: &ActiveVmPages<T>,
+        _active_pages: &ActiveVmCpu<T>,
     ) -> EcallAction {
         // TODO
         EcallAction::Unhandled
