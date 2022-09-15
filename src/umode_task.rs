@@ -12,6 +12,7 @@ use crate::task::Task;
 
 /// Loads the task
 pub fn load() -> Option<Task> {
+    // TODO initialize tasks in main with allocator instead, then store in PerCpu.
     let (user_start, num_user_pages) = PerCpu::this_cpu().user_mode_range();
     // Safety: page is uniquely owned after being taken from those reserved for this purpose.
     // TODO can `user_mode_range` return pages?
