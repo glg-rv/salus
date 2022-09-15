@@ -40,6 +40,6 @@ sha2 = {version = "0.10", default-features = false }
 
 members = [
 	"libuser",
-	"memcpy",
+	"umode",
         "test-workloads",
 ]

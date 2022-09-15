@@ -18,7 +18,7 @@ pub fn load() -> Option<Task> {
     let page_table: FirstStagePageTable<Sv48> =
         FirstStagePageTable::new(root_page.into()).expect("creating sv48");
 
-    let bytes = include_bytes!("../target/riscv64gc-unknown-none-elf/release/memcpy");
+    let bytes = include_bytes!("../target/riscv64gc-unknown-none-elf/release/umode");
     let elf = Elf::from_bytes(bytes).unwrap(); // TODO
 
     let elf64 = match elf {
