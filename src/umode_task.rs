@@ -25,9 +25,8 @@ pub fn load() -> Option<Task> {
         Elf::Elf64(elf) => elf,
         _ => panic!("got Elf32, expected Elf64"),
     };
-    let (page_start, num_pages) = PerCpu::this_cpu().user_mode_range();
     for header in elf64.program_header_iter() {
         // TODO
     }
-    None
+    Some(Task::new(page_table))
 }

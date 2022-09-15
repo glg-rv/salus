@@ -5,7 +5,7 @@
 use core::arch::global_asm;
 use core::mem::size_of;
 use memoffset::offset_of;
-use riscv_page_tables::Sv48;
+use riscv_page_tables::{FirstStagePageTable, Sv48};
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 
 /// Host GPR and which must be saved/restored when entering/exiting a task.
@@ -140,12 +140,12 @@ global_asm!(
 /// A Task that is being run.
 pub struct Task {
     info: TaskCpuState,
-    pages: Sv48,
+    pages: FirstStagePageTable<Sv48>,
 }
 
 impl Task {
     /// Create a new task using the given initial page table.
-    fn new(page_table: Sv48) -> Self {
+    pub fn new(page_table: FirstStagePageTable<Sv48>) -> Self {
         let info = TaskCpuState::default();
 
         Task {
