@@ -92,7 +92,7 @@ tellus: guestvm
 
 .PHONY: umode
 umode:
-	RUSTFLAGS='-Clink-arg=-Tlds/umode.lds' cargo build --package umode
+	RUSTFLAGS='-Clink-arg=-Tlds/umode.lds' cargo build  --release --package umode
 
 # Runnable targets:
 #

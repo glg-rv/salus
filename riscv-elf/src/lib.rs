@@ -24,15 +24,10 @@ impl ElfOffset64 {
     fn as_usize(&self) -> Option<usize> {
         self.inner.try_into().ok()
     }
-}
 
-impl Add<usize> for ElfOffset64 {
-    type Output = Self;
-
-    fn add(self, other: usize) -> Self::Output {
-        Self {
-            inner: self.inner + (other as u64),
-        }
+    fn usize_add(self, other: usize) -> Option<ElfOffset64> {
+        let inner = self.inner.checked_add(other as u64)?;
+        Some(Self { inner })
     }
 }
 
@@ -52,14 +47,17 @@ fn slice_check_offset(bytes: &[u8], offset: ElfOffset64) -> bool {
 }
 
 fn slice_check_range(bytes: &[u8], offset: ElfOffset64, size: usize) -> bool {
-    if size > 0 {
-        slice_check_offset(bytes, offset + (size - 1))
+    if size < 1 {
+        return false;
+    }
+
+    if let Some(last) = offset.usize_add(size - 1) {
+        slice_check_offset(bytes, last)
     } else {
         false
     }
 }
 
-//fn slice_get_range<'a>(bytes: &'a [u8], offset: ElfOffset64, len: usize) -> Option<&'a [u8]> {
 fn slice_get_range(bytes: &[u8], offset: ElfOffset64, len: usize) -> Option<&[u8]> {
     if slice_check_range(bytes, offset, len) {
         // Unwrap safe because check_range succeeded, will fit into `usize`.
@@ -83,7 +81,6 @@ pub struct ElfProgramHeader64 {
     p_memsz: u64,
     p_align: u64,
 }
-
 
 /// ELF64 Header
 #[repr(packed, C)]
@@ -118,7 +115,6 @@ const EI_VERSION_1: u8 = 1;
 const E_MACHINE_RISCV: u16 = 0xf3;
 const E_VERSION_1: u32 = 1;
 
-
 /// ELF Loader Errors.
 #[derive(Debug)]
 pub enum Error {
@@ -140,28 +136,27 @@ pub enum Error {
 
 #[derive(Debug)]
 pub struct ElfLoader<'elf> {
-    file: &'elf [u8],
+    bytes: &'elf [u8],
     ph_array: ArrayVec<&'elf ElfProgramHeader64, ELF_PH_MAX>,
 }
 
 impl<'elf> ElfLoader<'elf> {
     pub fn check_offset(&self, offset: ElfOffset64) -> bool {
-        slice_check_offset(self.file, offset)
+        slice_check_offset(self.bytes, offset)
     }
 
     pub fn check_range(&self, offset: ElfOffset64, size: usize) -> bool {
-        slice_check_range(self.file, offset, size)
+        slice_check_range(self.bytes, offset, size)
     }
 
     pub fn get_range(&self, offset: ElfOffset64, len: usize) -> Option<&'elf [u8]> {
-        slice_get_range(self.file, offset, len)
+        slice_get_range(self.bytes, offset, len)
     }
 
-    pub fn new(file: &'elf [u8]) -> Result<ElfLoader<'elf>, Error> {
-
+    pub fn new(bytes: &'elf [u8]) -> Result<ElfLoader<'elf>, Error> {
         // Chek ELF Header
 
-        let hbytes = slice_get_range(file, 0.into(), core::mem::size_of::<ElfHeader64>())
+        let hbytes = slice_get_range(bytes, 0.into(), core::mem::size_of::<ElfHeader64>())
             .ok_or(Error::InsufficientBuffer)?;
         // Safe because we are sure that the size of the slice is the same size as ElfHeader64.
         let header: &'elf ElfHeader64 = unsafe { &*(hbytes.as_ptr() as *const ElfHeader64) };
@@ -196,7 +191,7 @@ impl<'elf> ElfLoader<'elf> {
             return Err(Error::ELFPhEntrySize);
         }
         // Check that we can read the program header table.
-        let program_headers = slice_get_range(file, header.e_phoff, phnum * phentsize)
+        let program_headers = slice_get_range(bytes, header.e_phoff, phnum * phentsize)
             .ok_or(Error::InsufficientBuffer)?;
 
         let mut ph_array = ArrayVec::<&ElfProgramHeader64, ELF_PH_MAX>::new();
@@ -209,10 +204,7 @@ impl<'elf> ElfLoader<'elf> {
             ph_array.push(ph);
         }
 
-        Ok(Self {
-            file,
-            ph_array,
-        })
+        Ok(Self { bytes, ph_array })
     }
 
     pub fn program_header_iter(&self) -> impl Iterator<Item = &&ElfProgramHeader64> {
@@ -226,51 +218,51 @@ mod tests {
 
     #[test]
     fn offset_test() {
-        let file1 = [0u8; 5];
-        let file2 = [0u8; 6];
+        let bytes1 = [0u8; 5];
+        let bytes2 = [0u8; 6];
         let off1 = ElfOffset64 { inner: 3 };
         let off2 = ElfOffset64 { inner: 5 };
         let off3 = ElfOffset64 { inner: 6 };
 
-        let r = slice_check_offset(&file1, off1);
+        let r = slice_check_offset(&bytes1, off1);
         assert_eq!(r, true);
-        let r = slice_check_offset(&file1, off2);
+        let r = slice_check_offset(&bytes1, off2);
         assert_eq!(r, false);
-        let r = slice_check_offset(&file1, off3);
+        let r = slice_check_offset(&bytes1, off3);
         assert_eq!(r, false);
 
-        let r = slice_check_offset(&file2, off1);
+        let r = slice_check_offset(&bytes2, off1);
         assert_eq!(r, true);
-        let r = slice_check_offset(&file2, off2);
+        let r = slice_check_offset(&bytes2, off2);
         assert_eq!(r, true);
-        let r = slice_check_offset(&file2, off3);
+        let r = slice_check_offset(&bytes2, off3);
         assert_eq!(r, false);
 
-        let r = slice_check_range(&file1, 0.into(), 0);
+        let r = slice_check_range(&bytes1, 0.into(), 0);
         assert_eq!(r, false);
-        let r = slice_get_range(&file1, 0.into(), 0);
+        let r = slice_get_range(&bytes1, 0.into(), 0);
         assert!(r.is_none());
 
-        let r = slice_check_range(&file1, 0.into(), 5);
+        let r = slice_check_range(&bytes1, 0.into(), 5);
         assert_eq!(r, true);
-        let r = slice_get_range(&file1, 0.into(), 5);
+        let r = slice_get_range(&bytes1, 0.into(), 5);
         assert!(r.is_some());
         assert_eq!(r.unwrap().len(), 5);
 
-        let r = slice_check_range(&file1, 0.into(), 6);
+        let r = slice_check_range(&bytes1, 0.into(), 6);
         assert_eq!(r, false);
-        let r = slice_get_range(&file1, 0.into(), 6);
+        let r = slice_get_range(&bytes1, 0.into(), 6);
         assert!(r.is_none());
 
-        let r = slice_check_range(&file1, 4.into(), 1);
+        let r = slice_check_range(&bytes1, 4.into(), 1);
         assert_eq!(r, true);
-        let r = slice_get_range(&file1, 4.into(), 1);
+        let r = slice_get_range(&bytes1, 4.into(), 1);
         assert!(r.is_some());
         assert_eq!(r.unwrap().len(), 1);
 
-        let r = slice_check_range(&file1, 5.into(), 1);
+        let r = slice_check_range(&bytes1, 5.into(), 1);
         assert_eq!(r, false);
-        let r = slice_get_range(&file1, 5.into(), 1);
+        let r = slice_get_range(&bytes1, 5.into(), 1);
         assert!(r.is_none());
     }
 }

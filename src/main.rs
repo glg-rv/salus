@@ -568,6 +568,7 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     let mut hyp_mem = HypPageAlloc::new(mem_map);
 
     // TODO: init cpu tasks here.
+    umode_task::load(&mut hyp_mem);
 
     // Find and initialize the IOMMU.
     match Iommu::probe_from(PcieRoot::get(), &mut || {
