@@ -6,7 +6,7 @@ use crate::error::*;
 use crate::function::*;
 
 /// Functions defined for the Rivos test extension
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum RivosTestFunction {
     /// Returns the implemented version of the SBI standard.
     MemCopy(MemCopyArgs),
@@ -59,7 +59,7 @@ impl SbiFunction for RivosTestFunction {
 }
 
 /// Arguments to the memcpy test function
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MemCopyArgs {
     pub to: u64,
     pub from: u64,

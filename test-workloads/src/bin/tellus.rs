@@ -27,7 +27,7 @@ use riscv_regs::{DecodedInstruction, Exception, GprIndex, Instruction, Trap, CSR
 use s_mode_utils::abort::abort;
 use s_mode_utils::ecall::ecall_send;
 use s_mode_utils::{print::*, sbi_console::SbiConsole};
-use sbi::api::{base, pmu, reset, tee_host, tee_interrupt, rivos_test};
+use sbi::api::{base, pmu, reset, rivos_test, tee_host, tee_interrupt};
 use sbi::{
     PmuCounterConfigFlags, PmuCounterStartFlags, PmuCounterStopFlags, PmuEventType, PmuFirmware,
     PmuHardware, SbiMessage, TeeMemoryRegion, EXT_PMU, EXT_TEE_HOST, EXT_TEE_INTERRUPT,

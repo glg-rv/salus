@@ -169,7 +169,7 @@ impl SbiMessage {
             TeeGuest(_) => EXT_TEE_GUEST,
             Attestation(_) => EXT_ATTESTATION,
             Pmu(_) => EXT_PMU,
-	    RivosTest(_) => EXT_RIVOS_TEST,
+            RivosTest(_) => EXT_RIVOS_TEST,
         }
     }
 
@@ -207,6 +207,7 @@ impl SbiMessage {
             TeeGuest(f) => f.a5(),
             Attestation(f) => f.a5(),
             Pmu(f) => f.a5(),
+            RivosTest(f) => f.a5(),
         }
     }
 
@@ -224,6 +225,7 @@ impl SbiMessage {
             TeeGuest(f) => f.a4(),
             Attestation(f) => f.a4(),
             Pmu(f) => f.a4(),
+            RivosTest(f) => f.a4(),
         }
     }
 
@@ -241,6 +243,7 @@ impl SbiMessage {
             TeeGuest(f) => f.a3(),
             Attestation(f) => f.a3(),
             Pmu(f) => f.a3(),
+            RivosTest(f) => f.a3(),
         }
     }
 
@@ -248,7 +251,7 @@ impl SbiMessage {
     pub fn a2(&self) -> u64 {
         use SbiMessage::*;
         match self {
-<<<            PutChar(_) => 0,
+            PutChar(_) => 0,
             Base(f) => f.a2(),
             HartState(f) => f.a2(),
             Reset(f) => f.a2(),
@@ -259,7 +262,6 @@ impl SbiMessage {
             Attestation(f) => f.a2(),
             Pmu(f) => f.a2(),
             RivosTest(f) => f.a2(),
-            _ => 0,
         }
     }
 
@@ -278,7 +280,6 @@ impl SbiMessage {
             Attestation(f) => f.a1(),
             Pmu(f) => f.a1(),
             RivosTest(f) => f.a1(),
-            _ => 0,
         }
     }
 
@@ -297,7 +298,6 @@ impl SbiMessage {
             Attestation(f) => f.a0(),
             Pmu(f) => f.a0(),
             RivosTest(f) => f.a0(),
-            _ => 0,
         }
     }
 
