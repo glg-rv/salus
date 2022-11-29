@@ -34,8 +34,8 @@ pub enum PageState {
     Shared(u64),
 
     /// Page is used to store hypervisor-internal state for the current owner, e.g. to back per-VM
-    /// data structures or as a page-table page for the VM.
-    VmState,
+    /// data structures or as a page-table page for the VM or hypervisor.
+    InternalState,
 
     /// Page has been invalidated and started the conversion operation at the given TLB version in
     /// the current owner's address space.
@@ -113,8 +113,8 @@ impl PageInfo {
     pub fn owner(&self) -> Option<PageOwnerId> {
         use PageState::*;
         match self.state {
-            Converting(_) | Unassigning(_) | Converted | ConvertedLocked | Mapped | VmState
-            | Shared(_) => {
+            Converting(_) | Unassigning(_) | Converted | ConvertedLocked | Mapped
+            | InternalState | Shared(_) => {
                 if !self.owners.is_empty() {
                     Some(self.owners[self.owners.len() - 1])
                 } else {
@@ -150,7 +150,7 @@ impl PageInfo {
     pub fn release(&mut self) -> PageTrackingResult<()> {
         use PageState::*;
         match self.state {
-            Mapped | VmState | Converted | Converting(_) | Unassigning(_) => {
+            Mapped | InternalState | Converted | Converting(_) | Unassigning(_) => {
                 if self.owners.is_empty() {
                     Err(PageTrackingError::OwnerUnderflow) // Can't pop the last owner.
                 } else {
@@ -178,7 +178,7 @@ impl PageInfo {
     /// Assigns a "ConvertedLocked" page to `owner` with state `new_state`.
     pub fn assign(&mut self, owner: PageOwnerId, new_state: PageState) -> PageTrackingResult<()> {
         use PageState::*;
-        if !matches!(new_state, Mapped | VmState | Converted) {
+        if !matches!(new_state, Mapped | InternalState | Converted) {
             // Going back to free/reserved isn't allowed, nor does it make sense for a page to
             // immediately enter the "Converting" or "Unassigning" state.
             return Err(PageTrackingError::InvalidStateTransition);
