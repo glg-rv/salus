@@ -13,8 +13,16 @@ use riscv_regs::{satp, LocalRegisterCopy, SatpHelpers};
 /// Maximum number of regions that will be mapped in the hypervisor.
 const MAX_HYPMAP_REGIONS: usize = 32;
 
+enum HypMapData {
+    FixedMapping(PageAddr<SupervisorPhys>),
+    PerCpuMapping {
+        data: &'static [u8],
+    },
+}
+
 /// Represents a region of the virtual address space of the hypervisor.
 pub struct HypMapRegion {
+    data: HypMapData,
     vaddr: PageAddr<SupervisorVirt>,
     paddr: PageAddr<SupervisorPhys>,
     page_count: usize,
@@ -47,15 +55,16 @@ impl HypMapRegion {
         };
 
         if let Some(pte_perms) = perms {
-            let paddr = r.base();
+            let data = HypMapData::FixedMapping(r.base());
             // vaddr == paddr in mapping HW memory map.
             // Unwrap okay. `paddr` is a page addr so it is aligned to the page.
             let vaddr = PageAddr::new(RawAddr::supervisor_virt(r.base().bits())).unwrap();
             let page_count = PageSize::num_4k_pages(r.size()) as usize;
             let pte_fields = PteFieldBits::leaf_with_perms(pte_perms);
             Some(Self {
+                data,
                 vaddr,
-                paddr,
+                page_size,
                 page_count,
                 pte_fields,
             })
@@ -78,6 +87,8 @@ impl HypMapRegion {
                 get_pte_page,
             )
             .unwrap();
+        let pte_fields = PteFieldBits::leaf_with_perms(self.pte_perms);
+        let paddr = data.paddr()
         for (virt, phys) in self
             .vaddr
             .iter_from()
