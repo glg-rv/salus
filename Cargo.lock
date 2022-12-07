@@ -341,6 +341,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64de3cc433455c14174d42e554d4027ee631c4d046d43e3ecc6efc4636cdc7a7"
 
 [[package]]
+name = "libuser"
+version = "0.1.0"
+
+[[package]]
 name = "lock_api"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -497,6 +501,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bec7a6dc0b0bb96a4d23271864a45c0d24dcd9dde2a1b630a35f79fa29c588bf"
 
 [[package]]
+name = "riscv_elf"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+]
+
+[[package]]
 name = "riscv_page_tables"
 version = "0.1.0"
 dependencies = [
@@ -565,6 +576,7 @@ dependencies = [
  "memoffset",
  "page_tracking",
  "rice",
+ "riscv_elf",
  "riscv_page_tables",
  "riscv_pages",
  "riscv_regs",
@@ -757,6 +769,13 @@ name = "ucd-trie"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89570599c4fe5585de2b388aab47e99f7fa4e9238a1399f707a02e356058141c"
+
+[[package]]
+name = "umode"
+version = "0.1.0"
+dependencies = [
+ "libuser",
+]
 
 [[package]]
 name = "unicode-ident"

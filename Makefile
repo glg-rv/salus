@@ -71,11 +71,11 @@ check:
 CARGO_FLAGS :=
 
 .PHONY: salus
-salus:
+salus: umode
 	cargo build $(CARGO_FLAGS) --release --bin salus
 
 .PHONY: salus_debug
-salus_debug:
+salus_debug: umode
 	cargo build $(CARGO_FLAGS) --bin salus
 
 tellus_bin: tellus
@@ -89,6 +89,10 @@ guestvm:
 .PHONY: tellus
 tellus: guestvm
 	cargo build $(CARGO_FLAGS) --package test_workloads --bin tellus --release
+
+.PHONY: umode
+umode:
+	RUSTFLAGS='-Clink-arg=-Tlds/umode.lds' cargo build  --release --package umode
 
 # Runnable targets:
 #

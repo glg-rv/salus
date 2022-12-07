@@ -162,6 +162,20 @@ impl<S: State> SequentialPages<S> {
         })
     }
 
+    /// Removes the first `n` pages from the series and returns them as an independent
+    /// `SequentialPages` object.
+    pub fn take_pages(&mut self, n: u64) -> Option<Self> {
+        let taken = Self {
+            addr: self.addr,
+            page_size: self.page_size,
+            count: n,
+            state: PhantomData,
+        };
+        self.count = self.count.checked_sub(n)?;
+        self.addr = self.addr.checked_add_pages(n)?;
+        Some(taken)
+    }
+
     /// Returns an iterator across the addresses of all pages in `self`.
     pub fn page_addrs(&self) -> impl Iterator<Item = SupervisorPageAddr> {
         self.addr.iter_from().take(self.count as usize)

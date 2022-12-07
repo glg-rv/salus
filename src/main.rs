@@ -423,6 +423,10 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     // Probe for hardcoded reset device. Not really a probe.
     ResetDriver::probe_from(&hyp_dt, &mut mem_map).expect("Failed to set up Reset Device");
 
+    let user_elf = include_bytes!("../target/riscv64gc-unknown-none-elf/release/umode");
+    //    let user_map = UserMap::from_elf(user_elf).expect("ELF loading failed");
+    //    println!("GIANLUCA: {:?}", user_map);
+
     // Set up per-CPU memory and boot the secondary CPUs.
     PerCpu::init(hart_id, &mut mem_map);
 
@@ -435,7 +439,7 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     println!("HW memory map:");
     for (i, r) in mem_map.regions().enumerate() {
         println!(
-            "[{}] region: 0x{:x} -> 0x{:x}, {}",
+            "[{:02}] region: 0x{:016x} -> 0x{:016x}, {}",
             i,
             r.base().bits(),
             r.end().bits() - 1,

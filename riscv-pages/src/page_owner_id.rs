@@ -92,6 +92,25 @@ pub type SupervisorPhys = Supervisor<Physical>;
 /// Represents the supervisor's virtual address space.
 pub type SupervisorVirt = Supervisor<Virtual>;
 
+/// Represents the user-space part of the supervisor address space.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct User<T: AddressType>(PhantomData<T>);
+
+impl<T: AddressType> Default for User<T> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<T: AddressType> AddressSpace for User<T> {
+    fn id(&self) -> PageOwnerId {
+        PageOwnerId::hypervisor()
+    }
+}
+
+/// Represents the supervisor's user virtual address space.
+pub type UserVirt = User<Virtual>;
+
 /// Represents a guest address space.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Guest<T: AddressType>(PageOwnerId, PhantomData<T>);
