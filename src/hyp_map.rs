@@ -121,10 +121,9 @@ impl HypMapPopulatedRegion {
         // linker script for user ELF creates different segments at different pages. Failure to do so
         // would make `map_range()` in `map()` fail.
         //
-        // The following check enfoces that the segment starts at a 4k page aligned address. Unless
+        // The following check enforces that the segment starts at a 4k page aligned address. Unless
         // the linking is completely corrupt, this also means that it starts at a different page.
-
-        // Assert is okay. As this is a build error.
+        // Assert is okay. This is a build error.
         assert!(PageSize::Size4k.is_aligned(seg.vaddr()));
 
         let pte_perms = match seg.perms() {
@@ -160,8 +159,8 @@ impl HypMapPopulatedRegion {
         let len = core::cmp::min(self.data.len() as u64, self.size - self.offset);
         // Safe because we copy the minimum between the data size and the available bytes in the VA
         // area after the offset.
-        assert!(self.offset + len <= pages.length_bytes());
         unsafe {
+            assert!(self.offset + len <= pages.length_bytes());
             core::ptr::copy(self.data.as_ptr(), dest as *mut u8, len as usize);
         }
         // Map the populated pages in the page table.
