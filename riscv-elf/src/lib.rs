@@ -17,7 +17,7 @@ const ELF_SEGMENTS_MAX: usize = 8;
 /// An Elf Offset. A separate type to be sure to never used it
 /// directly, but only through `slice_*` functions.
 #[repr(packed, C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct ElfOffset64 {
     inner: u64,
 }
@@ -72,7 +72,7 @@ fn slice_get_range(bytes: &[u8], offset: ElfOffset64, len: usize) -> Option<&[u8
 
 /// ELF64 Program Header Table Entry
 #[repr(packed, C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct ElfProgramHeader64 {
     p_type: u32,
     p_flags: u32,
@@ -100,7 +100,7 @@ pub const PF_R: u32 = 0x4;
 
 /// ELF64 Header
 #[repr(packed, C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct ElfHeader64 {
     ei_magic: [u8; 4],
     ei_class: u8,
@@ -155,10 +155,14 @@ pub enum Error {
 }
 
 #[derive(Debug)]
+/// Mapping Permissions of an ELF Segment
 pub enum ElfSegmentPerms {
-    R,
-    RW,
-    RX,
+    /// Read-Only
+    ReadOnly,
+    /// Read-Write
+    ReadWrite,
+    /// Executable Page (Read Only)
+    ReadOnlyExecute,
 }
 
 /// A structure representing a segment.
@@ -178,11 +182,11 @@ impl<'elf> ElfSegment<'elf> {
         flags: u32,
     ) -> Result<ElfSegment<'elf>, Error> {
         let perms = if flags == PF_R {
-            Ok(ElfSegmentPerms::R)
+            Ok(ElfSegmentPerms::ReadOnly)
         } else if flags == PF_R | PF_W {
-            Ok(ElfSegmentPerms::RW)
+            Ok(ElfSegmentPerms::ReadWrite)
         } else if flags == PF_R | PF_X {
-            Ok(ElfSegmentPerms::RX)
+            Ok(ElfSegmentPerms::ReadOnlyExecute)
         } else {
             Err(Error::UnsupportedSegmentFlags(flags))
         }?;
@@ -198,52 +202,29 @@ impl<'elf> ElfSegment<'elf> {
         })
     }
 
+    /// Returns a reference to the data that must be populated at the beginning of the segment.
     pub fn data(&self) -> &'elf [u8] {
         self.data
     }
 
+    /// Returns the Virtual Address of the start of the segment.
     pub fn vaddr(&self) -> u64 {
         self.vaddr
     }
 
+    /// Return the size of the Virtual Address area.
     pub fn size(&self) -> usize {
         self.size
     }
 
+    /// Return the mapping permissions of the segment.
     pub fn perms(&self) -> &ElfSegmentPerms {
         &self.perms
     }
-    /*
-        pub fn vaddr(&self) -> SupervisorPageAddr {
-            SupervisorPageAddr::new(RawAddr::supervisor(self.vaddr))
-        }
-
-        pub fn num_4k_pages(&self) -> u64 {
-            let base = PageSize::Size4k.round_down(self.vaddr);
-            // Unwrap okay. We checked size at creation.
-            let end = self.vaddr.checked_add(self.size as u64).unwrap();
-            PageSize::num_4k_pages(end - base)
-        }
-
-        pub fn populate(&self, range: SupervisorPageRange) -> Result<()> {
-            let offset = self.vaddr - PageSize::Size4k.round_down(self.vaddr);
-            let len = core::cmp::min(range.length_bytes(), data.len());
-            let dst = (range.base().bits() + offset) as *const u8;
-            unsafe {
-                core::ptr::copy(self.data, dst, len);
-            }
-        }
-
-        pub fn flags(&self) {
-            self.flags
-        }
-    */
 }
 
 /// A structure that checks and prepares and ELF for loading into memory.
-#[derive(Debug)]
 pub struct ElfMap<'elf> {
-    bytes: &'elf [u8],
     segments: ArrayVec<ElfSegment<'elf>, ELF_SEGMENTS_MAX>,
 }
 
@@ -320,7 +301,7 @@ impl<'elf> ElfMap<'elf> {
             segments.push(segment);
         }
 
-        Ok(Self { bytes, segments })
+        Ok(Self { segments })
     }
 
     /// Return an iterator containings loadable segments of this ELF file.

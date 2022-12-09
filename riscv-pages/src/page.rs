@@ -9,7 +9,6 @@ use core::slice;
 use crate::state::*;
 use crate::{
     AddressSpace, GuestPhys, GuestVirt, MemType, PageOwnerId, SupervisorPhys, SupervisorVirt,
-    UserVirt,
 };
 
 /// The base page size is always 4kB.
@@ -116,14 +115,6 @@ impl RawAddr<SupervisorVirt> {
     /// Short for `RawAddr::new(addr, SupervisorVirt::default())`.
     pub fn supervisor_virt(addr: u64) -> Self {
         Self(addr, SupervisorVirt::default())
-    }
-}
-
-impl RawAddr<UserVirt> {
-    /// Creates a `RawAddr` in the `UserVirt` address space.
-    /// Short for `RawAddr::new(addr, UserVirt::default())`.
-    pub fn user_virt(addr: u64) -> Self {
-        Self(addr, UserVirt::default())
     }
 }
 

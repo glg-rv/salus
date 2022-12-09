@@ -55,7 +55,6 @@ impl PteFieldBit {
 }
 
 /// Permissions for a leaf page entry.
-#[derive(Debug, Copy, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum PteLeafPerms {
     /// Read only
@@ -152,7 +151,7 @@ impl Pte {
 }
 
 /// The status bits that define PTE state.
-#[derive(Default, Copy, Clone, Debug)]
+#[derive(Default, Copy, Clone)]
 pub struct PteFieldBits {
     bits: u64,
 }

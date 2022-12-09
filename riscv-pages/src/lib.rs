@@ -21,7 +21,7 @@ mod state;
 pub use memory_type::{DeviceMemType, MemType};
 pub use page::*;
 pub use page_owner_id::{
-    AddressSpace, GuestPhys, GuestVirt, PageOwnerId, SupervisorPhys, SupervisorVirt, UserVirt,
+    AddressSpace, GuestPhys, GuestVirt, PageOwnerId, SupervisorPhys, SupervisorVirt,
 };
 pub use sequential_pages::{Error as SequentialPagesError, SeqPageIter, SequentialPages};
 pub use state::*;

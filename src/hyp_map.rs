@@ -17,16 +17,16 @@ const MAX_HYPMAP_SUPERVISOR_REGIONS: usize = 32;
 /// Maximum number of per-pagetable regions that will be mapped in each pagetable.
 const MAX_HYPMAP_USER_REGIONS: usize = 32;
 
-/// Represents a region of the virtual address space of the hypervisor.
-pub struct HypMapSupervisorRegion {
+/// Represents a virtual address region of the hypervisor with a fixed VA->PA Mapping.
+pub struct HypMapFixedRegion {
     vaddr: PageAddr<SupervisorVirt>,
     paddr: PageAddr<SupervisorPhys>,
     page_count: usize,
     pte_fields: PteFieldBits,
 }
 
-impl HypMapSupervisorRegion {
-    // Create an HypMapSupervisorRegion from a Hw Memory Map entry.
+impl HypMapFixedRegion {
+    // Create a supervisor VA region from a Hw Memory Map entry.
     fn from_hw_mem_region(r: &HwMemRegion) -> Option<Self> {
         let perms = match r.region_type() {
             HwMemRegionType::Available => {
@@ -82,7 +82,6 @@ impl HypMapSupervisorRegion {
                 get_pte_page,
             )
             .unwrap();
-        let pte_fields = self.pte_fields;
         for (virt, phys) in self
             .vaddr
             .iter_from()
@@ -98,8 +97,7 @@ impl HypMapSupervisorRegion {
     }
 }
 
-/// Represents an area that must be allocated and populated to be mapped.
-#[derive(Debug)]
+/// Represents a virtual address region that must be allocated and populated to be mapped.
 struct HypMapPopulatedRegion {
     // The address space where this region starts.
     vaddr: PageAddr<SupervisorVirt>,
@@ -114,11 +112,12 @@ struct HypMapPopulatedRegion {
 }
 
 impl HypMapPopulatedRegion {
+    // Creates an user space virtual address region from a ELF segment.
     fn from_user_elf_segment(seg: &ElfSegment) -> Option<Self> {
         let pte_perms = match seg.perms() {
-            ElfSegmentPerms::R => PteLeafPerms::UR,
-            ElfSegmentPerms::RW => PteLeafPerms::URW,
-            ElfSegmentPerms::RX => PteLeafPerms::URX,
+            ElfSegmentPerms::ReadOnly => PteLeafPerms::UR,
+            ElfSegmentPerms::ReadWrite => PteLeafPerms::URW,
+            ElfSegmentPerms::ReadOnlyExecute => PteLeafPerms::URX,
         };
         let seg_start = seg.vaddr();
         let base = PageSize::Size4k.round_down(seg_start);
@@ -139,12 +138,13 @@ impl HypMapPopulatedRegion {
         })
     }
 
+    // Map this region into a page table.
     fn map(&self, sv48: &FirstStagePageTable<Sv48>, hyp_mem: &mut HypPageAlloc) {
         // Allocate and populate first.
         let page_count = PageSize::num_4k_pages(self.size);
         let pages = hyp_mem.take_pages_for_hyp_state(page_count as usize);
         let dest = pages.base().bits() + self.offset;
-        let len = core::cmp::min(self.data.len() as u64, self.size - self.offset); 
+        let len = core::cmp::min(self.data.len() as u64, self.size - self.offset);
         // Safe because we copy the minimum between the data size and the available bytes in the VA
         // area after the offset.
         assert!(self.offset + len <= pages.length_bytes());
@@ -153,16 +153,10 @@ impl HypMapPopulatedRegion {
         }
 
         let mapper = sv48
-            .map_range(
-                self.vaddr,
-                PageSize::Size4k,
-                page_count,
-                &mut || {
-                    hyp_mem.take_pages_for_hyp_state(1).into_iter().next()
-                }
-            )
+            .map_range(self.vaddr, PageSize::Size4k, page_count, &mut || {
+                hyp_mem.take_pages_for_hyp_state(1).into_iter().next()
+            })
             .unwrap();
-        let pte_fields = self.pte_fields;
         for (virt, phys) in self
             .vaddr
             .iter_from()
@@ -174,6 +168,12 @@ impl HypMapPopulatedRegion {
             unsafe {
                 mapper.map_addr(virt, phys, self.pte_fields).unwrap();
             }
+        }
+
+        // TEST GIANLUCA
+        let ptr = self.vaddr.bits() as *mut u8;
+        unsafe {
+            *ptr = 0;
         }
     }
 }
@@ -194,25 +194,23 @@ impl HypPageTable {
 
 /// A set of global mappings of the hypervisor that can be used to create page tables.
 pub struct HypMap {
-    supervisor_regions: ArrayVec<HypMapSupervisorRegion, MAX_HYPMAP_SUPERVISOR_REGIONS>,
+    supervisor_regions: ArrayVec<HypMapFixedRegion, MAX_HYPMAP_SUPERVISOR_REGIONS>,
     user_regions: ArrayVec<HypMapPopulatedRegion, MAX_HYPMAP_USER_REGIONS>,
 }
 
-use s_mode_utils::print::*;
-
 impl HypMap {
     /// Create a new hypervisor map from a hardware memory mem map.
-    pub fn new(mem_map: HwMemMap, elf_map: &ElfMap) -> HypMap {
+    pub fn new(mem_map: HwMemMap, elf_map: ElfMap) -> HypMap {
+        // All supervisor regions comes from the HW memory map.
         let supervisor_regions = mem_map
             .regions()
-            .filter_map(HypMapSupervisorRegion::from_hw_mem_region)
+            .filter_map(HypMapFixedRegion::from_hw_mem_region)
             .collect();
-
+        // All user regions come from the ELF segment.
         let user_regions = elf_map
             .segments()
             .filter_map(HypMapPopulatedRegion::from_user_elf_segment)
             .collect();
-        println!("{:?}", user_regions);
         HypMap {
             supervisor_regions,
             user_regions,
@@ -231,13 +229,13 @@ impl HypMap {
         let sv48: FirstStagePageTable<Sv48> =
             FirstStagePageTable::new(root_page).expect("creating first sv48");
 
-        // Map supervisor_regions
+        // Map supervisor regions
         for r in &self.supervisor_regions {
             r.map(&sv48, &mut || {
                 hyp_mem.take_pages_for_hyp_state(1).into_iter().next()
             });
         }
-
+        // Map user regions.
         for r in &self.user_regions {
             r.map(&sv48, hyp_mem);
         }
