@@ -151,7 +151,7 @@ impl HypMapPopulatedRegion {
         unsafe {
             core::ptr::copy(self.data.as_ptr(), dest as *mut u8, len as usize);
         }
-
+        // Map the populated pages in the page table.
         let mapper = sv48
             .map_range(self.vaddr, PageSize::Size4k, page_count, &mut || {
                 hyp_mem.take_pages_for_hyp_state(1).into_iter().next()
@@ -163,8 +163,8 @@ impl HypMapPopulatedRegion {
             .zip(pages.base().iter_from())
             .take(page_count as usize)
         {
-            // Safe as we will create exactly one mapping to each page and will switch to
-            // using that mapping exclusively.
+            // Safe because these pages are mapped into user mode and will not be accessed in
+            // supervisor mode.
             unsafe {
                 mapper.map_addr(virt, phys, self.pte_fields).unwrap();
             }
