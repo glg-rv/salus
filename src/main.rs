@@ -470,6 +470,17 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     // The hypervisor mapping is complete. Can setup paging structures now.
     setup_hyp_paging(hyp_map, &mut hyp_mem);
 
+    // TEST GIANLUCA
+    let ptr = 0xffffffff00000000u64 as *mut u8;
+    unsafe {
+        CSR.sstatus.modify(sstatus::sum.val(1));
+        *ptr = 0;
+        *ptr = 1;
+        *ptr = 2;
+        CSR.sstatus.modify(sstatus::sum.val(0));
+        *(ptr.offset(3)) = 0;
+    }
+
     // Find and initialize the IOMMU.
     match Iommu::probe_from(PcieRoot::get(), &mut || {
         hyp_mem.take_pages_for_host_state(1).into_iter().next()

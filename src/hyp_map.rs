@@ -117,7 +117,7 @@ impl HypMapPopulatedRegion {
         let pte_perms = match seg.perms() {
             ElfSegmentPerms::ReadOnly => PteLeafPerms::UR,
             ElfSegmentPerms::ReadWrite => PteLeafPerms::URW,
-            ElfSegmentPerms::ReadOnlyExecute => PteLeafPerms::URX,
+            ElfSegmentPerms::ReadOnlyExecute => PteLeafPerms::URW,
         };
         let seg_start = seg.vaddr();
         let base = PageSize::Size4k.round_down(seg_start);
@@ -168,12 +168,6 @@ impl HypMapPopulatedRegion {
             unsafe {
                 mapper.map_addr(virt, phys, self.pte_fields).unwrap();
             }
-        }
-
-        // TEST GIANLUCA
-        let ptr = self.vaddr.bits() as *mut u8;
-        unsafe {
-            *ptr = 0;
         }
     }
 }
