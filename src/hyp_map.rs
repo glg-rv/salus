@@ -114,6 +114,19 @@ struct HypMapPopulatedRegion {
 impl HypMapPopulatedRegion {
     // Creates an user space virtual address region from a ELF segment.
     fn from_user_elf_segment(seg: &ElfSegment) -> Option<Self> {
+        // Sanity Check for segment alignments.
+        //
+        // In general ELF might have segments overlapping in the same page, possibly with different
+        // permissions. In order to maintain separation and expected permissions on every page, the
+        // linker script for user ELF creates different segments at different pages. Failure to do so
+        // would make `map_range()` in `map()` fail.
+        //
+        // The following check enfoces that the segment starts at a 4k page aligned address. Unless
+        // the linking is completely corrupt, this also means that it starts at a different page.
+
+        // Assert is okay. As this is a build error.
+        assert!(PageSize::Size4k.is_aligned(seg.vaddr()));
+
         let pte_perms = match seg.perms() {
             ElfSegmentPerms::ReadOnly => PteLeafPerms::UR,
             ElfSegmentPerms::ReadWrite => PteLeafPerms::URW,

@@ -8,6 +8,7 @@
 extern crate std;
 
 use arrayvec::ArrayVec;
+use core::{fmt, result, str};
 
 // Maximum size of Program Headers supported by the loader.
 const ELF_SEGMENTS_MAX: usize = 8;
@@ -163,6 +164,16 @@ pub enum ElfSegmentPerms {
     ReadWrite,
     /// Executable Page (Read Only)
     ReadOnlyExecute,
+}
+
+impl fmt::Display for ElfSegmentPerms {
+    fn fmt(&self, f: &mut fmt::Formatter) -> result::Result<(), fmt::Error> {
+        match &self {
+            Self::ReadOnly => write!(f, "RO"),
+            Self::ReadWrite => write!(f, "RW"),
+            Self::ReadOnlyExecute => write!(f, "RX"),
+        }
+    }
 }
 
 /// A structure representing a segment.
