@@ -139,17 +139,26 @@ pub enum Error {
     /// The ELF magic number is wrong.
     InvalidMagicNumber,
     /// Unexpected ELF Class
-    ELFClass,
-    /// Unexted Endiannes
-    Endianness,
+    InvalidClass,
+    /// Unsupported Endiannes
+    InvalidEndianness,
     /// ELF is not RISC V.
     NotRiscV,
     /// Unexpected ELF version.
-    ELFVersion,
+    BadElfVersion,
     /// Unexpected ELF PH Entry size.
-    ELFPHEntrySize,
+    BadEntrySize,
     /// Malformed Program Header.
-    ELFPHMalformed,
+    ProgramHeaderMalformed,
+    /// Segment Permissions Unsupported
+    UnsupportedSegmentFlags(u32),
+}
+
+#[derive(Debug)]
+pub enum ElfSegmentPerms {
+    R,
+    RW,
+    RX,
 }
 
 /// A structure representing a segment.
@@ -158,36 +167,89 @@ pub struct ElfSegment<'elf> {
     data: &'elf [u8],
     vaddr: u64,
     size: usize,
-    flags: u32,
+    perms: ElfSegmentPerms,
 }
 
-impl<'elf> ElfSegment<'elf> {}
+impl<'elf> ElfSegment<'elf> {
+    fn new(
+        data: &'elf [u8],
+        vaddr: u64,
+        size: usize,
+        flags: u32,
+    ) -> Result<ElfSegment<'elf>, Error> {
+        let perms = if flags == PF_R {
+            Ok(ElfSegmentPerms::R)
+        } else if flags == PF_R | PF_W {
+            Ok(ElfSegmentPerms::RW)
+        } else if flags == PF_R | PF_X {
+            Ok(ElfSegmentPerms::RX)
+        } else {
+            Err(Error::UnsupportedSegmentFlags(flags))
+        }?;
+        // Check size is valid
+        vaddr
+            .checked_add(size as u64)
+            .ok_or(Error::ProgramHeaderMalformed)?;
+        Ok(ElfSegment {
+            data,
+            vaddr,
+            size,
+            perms,
+        })
+    }
+
+    pub fn data(&self) -> &'elf [u8] {
+        self.data
+    }
+
+    pub fn vaddr(&self) -> u64 {
+        self.vaddr
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn perms(&self) -> &ElfSegmentPerms {
+        &self.perms
+    }
+    /*
+        pub fn vaddr(&self) -> SupervisorPageAddr {
+            SupervisorPageAddr::new(RawAddr::supervisor(self.vaddr))
+        }
+
+        pub fn num_4k_pages(&self) -> u64 {
+            let base = PageSize::Size4k.round_down(self.vaddr);
+            // Unwrap okay. We checked size at creation.
+            let end = self.vaddr.checked_add(self.size as u64).unwrap();
+            PageSize::num_4k_pages(end - base)
+        }
+
+        pub fn populate(&self, range: SupervisorPageRange) -> Result<()> {
+            let offset = self.vaddr - PageSize::Size4k.round_down(self.vaddr);
+            let len = core::cmp::min(range.length_bytes(), data.len());
+            let dst = (range.base().bits() + offset) as *const u8;
+            unsafe {
+                core::ptr::copy(self.data, dst, len);
+            }
+        }
+
+        pub fn flags(&self) {
+            self.flags
+        }
+    */
+}
 
 /// A structure that checks and prepares and ELF for loading into memory.
 #[derive(Debug)]
-pub struct ElfLoader<'elf> {
+pub struct ElfMap<'elf> {
     bytes: &'elf [u8],
     segments: ArrayVec<ElfSegment<'elf>, ELF_SEGMENTS_MAX>,
 }
 
-impl<'elf> ElfLoader<'elf> {
-    /// Check if an ELF offset is valid (i.e., fits in file)
-    pub fn check_offset(&self, offset: ElfOffset64) -> bool {
-        slice_check_offset(self.bytes, offset)
-    }
-
-    /// Check if an ELF offset and size is valid (i.e., range is included completely in file).
-    pub fn check_range(&self, offset: ElfOffset64, size: usize) -> bool {
-        slice_check_range(self.bytes, offset, size)
-    }
-
-    /// Return a slice of a range [offset, offset + size] if it's a valid range.
-    pub fn get_range(&self, offset: ElfOffset64, len: usize) -> Option<&'elf [u8]> {
-        slice_get_range(self.bytes, offset, len)
-    }
-
-    /// Create a new ElfLoader from a slice containing an ELF file.
-    pub fn new(bytes: &'elf [u8]) -> Result<ElfLoader<'elf>, Error> {
+impl<'elf> ElfMap<'elf> {
+    /// Create a new ElfMap from a slice containing an ELF file.
+    pub fn new(bytes: &'elf [u8]) -> Result<ElfMap<'elf>, Error> {
         // Chek ELF Header
 
         let hbytes = slice_get_range(bytes, 0.into(), core::mem::size_of::<ElfHeader64>())
@@ -200,15 +262,15 @@ impl<'elf> ElfLoader<'elf> {
         }
         // Check is 64bit ELF.
         if header.ei_class != EI_CLASS_64 {
-            return Err(Error::ELFClass);
+            return Err(Error::InvalidClass);
         }
         // Check is Little-Endian
         if header.ei_data != EI_DATA_LE {
-            return Err(Error::Endianness);
+            return Err(Error::InvalidEndianness);
         }
         // Check ELF versions.
         if header.ei_version != EI_VERSION_1 || header.e_version != E_VERSION_1 {
-            return Err(Error::ELFVersion);
+            return Err(Error::BadElfVersion);
         }
         // Check is RISC-V.
         if header.e_machine != E_MACHINE_RISCV {
@@ -220,7 +282,7 @@ impl<'elf> ElfLoader<'elf> {
         let phentsize = header.e_phentsize as usize;
         // Check that e_phentsize is >= of size of ElfProgramHeader64
         if core::mem::size_of::<ElfProgramHeader64>() > phentsize {
-            return Err(Error::ELFPHEntrySize);
+            return Err(Error::BadEntrySize);
         }
         // Check that we can read the program header table.
         let program_headers =
@@ -243,24 +305,26 @@ impl<'elf> ElfLoader<'elf> {
             }
 
             // Create a segment from the PH.
-            let datasz: usize = ph.p_filesz.try_into().map_err(|_| Error::ELFPHMalformed)?;
+            let datasz: usize = ph
+                .p_filesz
+                .try_into()
+                .map_err(|_| Error::ProgramHeaderMalformed)?;
             let data = slice_get_range(bytes, ph.p_offset, datasz).ok_or(Error::BadOffset)?;
             let vaddr = ph.p_vaddr;
-            let size: usize = ph.p_memsz.try_into().map_err(|_| Error::ELFPHMalformed)?;
+            let size: usize = ph
+                .p_memsz
+                .try_into()
+                .map_err(|_| Error::ProgramHeaderMalformed)?;
             let flags = ph.p_flags;
-            segments.push(ElfSegment {
-                data,
-                vaddr,
-                size,
-                flags,
-            });
+            let segment = ElfSegment::new(data, vaddr, size, flags)?;
+            segments.push(segment);
         }
 
         Ok(Self { bytes, segments })
     }
 
     /// Return an iterator containings loadable segments of this ELF file.
-    pub fn segment_iter(&self) -> impl Iterator<Item = &ElfSegment> {
+    pub fn segments(&'elf self) -> impl Iterator<Item = &'elf ElfSegment> {
         self.segments.iter()
     }
 }

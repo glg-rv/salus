@@ -47,6 +47,7 @@ use host_vm_loader::HostVmLoader;
 use hyp_alloc::HypAlloc;
 use hyp_map::HypMap;
 use page_tracking::*;
+use riscv_elf::ElfMap;
 use riscv_page_tables::*;
 use riscv_pages::*;
 use riscv_regs::{hedeleg, henvcfg, hideleg, hie, scounteren};
@@ -423,10 +424,6 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     // Probe for hardcoded reset device. Not really a probe.
     ResetDriver::probe_from(&hyp_dt, &mut mem_map).expect("Failed to set up Reset Device");
 
-    let user_elf = include_bytes!("../target/riscv64gc-unknown-none-elf/release/umode");
-    //    let user_map = UserMap::from_elf(user_elf).expect("ELF loading failed");
-    //    println!("GIANLUCA: {:?}", user_map);
-
     // Set up per-CPU memory and boot the secondary CPUs.
     PerCpu::init(hart_id, &mut mem_map);
 
@@ -463,8 +460,12 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     let guest_phys_size = mem_map.regions().last().unwrap().end().bits()
         - mem_map.regions().next().unwrap().base().bits();
 
+    // Parse the user-mode ELF containing the user-mode task.
+    let user_elf = include_bytes!("../target/riscv64gc-unknown-none-elf/release/umode");
+    let user_map = ElfMap::new(user_elf).expect("Cannot load user-mode ELF");
+
     // Create the hypervisor mapping starting from the hardware memory map.
-    let hyp_map = HypMap::new(mem_map);
+    let hyp_map = HypMap::new(mem_map, &user_map);
 
     // The hypervisor mapping is complete. Can setup paging structures now.
     setup_hyp_paging(hyp_map, &mut hyp_mem);

@@ -2,36 +2,32 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use page_tracking::{HwMemMap, HwMemRegion, HwMemRegionType, HwReservedMemType, HypPageAlloc};
+use riscv_elf::{ElfMap, ElfSegment, ElfSegmentPerms};
 use riscv_page_tables::{FirstStagePageTable, PteFieldBits, PteLeafPerms, Sv48};
 use riscv_pages::{
     InternalClean, Page, PageAddr, PageSize, RawAddr, SupervisorPhys, SupervisorVirt,
 };
 use riscv_regs::{satp, LocalRegisterCopy, SatpHelpers};
 
-/// Maximum number of regions that will be mapped in the hypervisor.
-const MAX_HYPMAP_REGIONS: usize = 32;
-
-enum HypMapData {
-    FixedMapping(PageAddr<SupervisorPhys>),
-    PerCpuMapping {
-        data: &'static [u8],
-    },
-}
+/// Maximum number of regions that will be mapped in all pagetables in the hypervisor.
+const MAX_HYPMAP_SUPERVISOR_REGIONS: usize = 32;
+/// Maximum number of per-pagetable regions that will be mapped in each pagetable.
+const MAX_HYPMAP_USER_REGIONS: usize = 32;
 
 /// Represents a region of the virtual address space of the hypervisor.
-pub struct HypMapRegion {
-    data: HypMapData,
+pub struct HypMapSupervisorRegion {
     vaddr: PageAddr<SupervisorVirt>,
     paddr: PageAddr<SupervisorPhys>,
     page_count: usize,
     pte_fields: PteFieldBits,
 }
 
-impl HypMapRegion {
-    /// Create an HypMapRegion from a Hw Memory Map entry.
-    pub fn from_hw_mem_region(r: &HwMemRegion) -> Option<Self> {
+impl HypMapSupervisorRegion {
+    // Create an HypMapSupervisorRegion from a Hw Memory Map entry.
+    fn from_hw_mem_region(r: &HwMemRegion) -> Option<Self> {
         let perms = match r.region_type() {
             HwMemRegionType::Available => {
                 // map available memory as rw - unsure what it'll be used for.
@@ -55,16 +51,15 @@ impl HypMapRegion {
         };
 
         if let Some(pte_perms) = perms {
-            let data = HypMapData::FixedMapping(r.base());
+            let paddr = r.base();
             // vaddr == paddr in mapping HW memory map.
             // Unwrap okay. `paddr` is a page addr so it is aligned to the page.
             let vaddr = PageAddr::new(RawAddr::supervisor_virt(r.base().bits())).unwrap();
             let page_count = PageSize::num_4k_pages(r.size()) as usize;
             let pte_fields = PteFieldBits::leaf_with_perms(pte_perms);
             Some(Self {
-                data,
                 vaddr,
-                page_size,
+                paddr,
                 page_count,
                 pte_fields,
             })
@@ -73,7 +68,7 @@ impl HypMapRegion {
         }
     }
 
-    /// Map this region into a page table.
+    // Map this region into a page table.
     fn map(
         &self,
         sv48: &FirstStagePageTable<Sv48>,
@@ -87,13 +82,92 @@ impl HypMapRegion {
                 get_pte_page,
             )
             .unwrap();
-        let pte_fields = PteFieldBits::leaf_with_perms(self.pte_perms);
-        let paddr = data.paddr()
+        let pte_fields = self.pte_fields;
         for (virt, phys) in self
             .vaddr
             .iter_from()
             .zip(self.paddr.iter_from())
             .take(self.page_count)
+        {
+            // Safe as we will create exactly one mapping to each page and will switch to
+            // using that mapping exclusively.
+            unsafe {
+                mapper.map_addr(virt, phys, self.pte_fields).unwrap();
+            }
+        }
+    }
+}
+
+/// Represents an area that must be allocated and populated to be mapped.
+#[derive(Debug)]
+struct HypMapPopulatedRegion {
+    // The address space where this region starts.
+    vaddr: PageAddr<SupervisorVirt>,
+    // Number of bytes of the VA area
+    size: u64,
+    // PTE bits for the mappings.
+    pte_fields: PteFieldBits,
+    // Data to be populated in the VA area
+    data: Vec<u8>,
+    // Offset from `vaddr` where the data must be copied.
+    offset: u64,
+}
+
+impl HypMapPopulatedRegion {
+    fn from_user_elf_segment(seg: &ElfSegment) -> Option<Self> {
+        let pte_perms = match seg.perms() {
+            ElfSegmentPerms::R => PteLeafPerms::UR,
+            ElfSegmentPerms::RW => PteLeafPerms::URW,
+            ElfSegmentPerms::RX => PteLeafPerms::URX,
+        };
+        let seg_start = seg.vaddr();
+        let base = PageSize::Size4k.round_down(seg_start);
+        // Unwrap okay. `paddr` is a page addr so it is aligned to the page.
+        let vaddr = PageAddr::new(RawAddr::supervisor_virt(base)).unwrap();
+        // Unwrap okay: this was checked on ELF segment creation.
+        let end = seg_start.checked_add(seg.size() as u64).unwrap();
+        let size = end - base;
+        let pte_fields = PteFieldBits::leaf_with_perms(pte_perms);
+        let offset = seg_start - base;
+        let data = Vec::from(seg.data());
+        Some(HypMapPopulatedRegion {
+            vaddr,
+            size,
+            pte_fields,
+            data,
+            offset,
+        })
+    }
+
+    fn map(&self, sv48: &FirstStagePageTable<Sv48>, hyp_mem: &mut HypPageAlloc) {
+        // Allocate and populate first.
+        let page_count = PageSize::num_4k_pages(self.size);
+        let pages = hyp_mem.take_pages_for_hyp_state(page_count as usize);
+        let dest = pages.base().bits() + self.offset;
+        let len = core::cmp::min(self.data.len() as u64, self.size - self.offset); 
+        // Safe because we copy the minimum between the data size and the available bytes in the VA
+        // area after the offset.
+        assert!(self.offset + len <= pages.length_bytes());
+        unsafe {
+            core::ptr::copy(self.data.as_ptr(), dest as *mut u8, len as usize);
+        }
+
+        let mapper = sv48
+            .map_range(
+                self.vaddr,
+                PageSize::Size4k,
+                page_count,
+                &mut || {
+                    hyp_mem.take_pages_for_hyp_state(1).into_iter().next()
+                }
+            )
+            .unwrap();
+        let pte_fields = self.pte_fields;
+        for (virt, phys) in self
+            .vaddr
+            .iter_from()
+            .zip(pages.base().iter_from())
+            .take(page_count as usize)
         {
             // Safe as we will create exactly one mapping to each page and will switch to
             // using that mapping exclusively.
@@ -120,17 +194,29 @@ impl HypPageTable {
 
 /// A set of global mappings of the hypervisor that can be used to create page tables.
 pub struct HypMap {
-    regions: ArrayVec<HypMapRegion, MAX_HYPMAP_REGIONS>,
+    supervisor_regions: ArrayVec<HypMapSupervisorRegion, MAX_HYPMAP_SUPERVISOR_REGIONS>,
+    user_regions: ArrayVec<HypMapPopulatedRegion, MAX_HYPMAP_USER_REGIONS>,
 }
+
+use s_mode_utils::print::*;
 
 impl HypMap {
     /// Create a new hypervisor map from a hardware memory mem map.
-    pub fn new(mem_map: HwMemMap) -> HypMap {
-        let regions = mem_map
+    pub fn new(mem_map: HwMemMap, elf_map: &ElfMap) -> HypMap {
+        let supervisor_regions = mem_map
             .regions()
-            .filter_map(HypMapRegion::from_hw_mem_region)
+            .filter_map(HypMapSupervisorRegion::from_hw_mem_region)
             .collect();
-        HypMap { regions }
+
+        let user_regions = elf_map
+            .segments()
+            .filter_map(HypMapPopulatedRegion::from_user_elf_segment)
+            .collect();
+        println!("{:?}", user_regions);
+        HypMap {
+            supervisor_regions,
+            user_regions,
+        }
     }
 
     /// Create a new page table based on this memory map.
@@ -145,11 +231,15 @@ impl HypMap {
         let sv48: FirstStagePageTable<Sv48> =
             FirstStagePageTable::new(root_page).expect("creating first sv48");
 
-        // Map all the regions in the memory map that the hypervisor could need.
-        for r in &self.regions {
+        // Map supervisor_regions
+        for r in &self.supervisor_regions {
             r.map(&sv48, &mut || {
                 hyp_mem.take_pages_for_hyp_state(1).into_iter().next()
             });
+        }
+
+        for r in &self.user_regions {
+            r.map(&sv48, hyp_mem);
         }
         HypPageTable { inner: sv48 }
     }
