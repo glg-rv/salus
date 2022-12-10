@@ -196,14 +196,14 @@ pub struct HypMap {
 
 impl HypMap {
     /// Create a new hypervisor map from a hardware memory mem map.
-    pub fn new(mem_map: HwMemMap, user_map: ElfMap<'static>) -> HypMap {
+    pub fn new(mem_map: HwMemMap, umode_map: &ElfMap<'static>) -> HypMap {
         // All supervisor regions comes from the HW memory map.
         let supervisor_regions = mem_map
             .regions()
             .filter_map(HypMapFixedRegion::from_hw_mem_region)
             .collect();
-        // All user regions come from the ELF segment.
-        let user_regions = user_map
+        // All user regions come from the UMODE map.
+        let user_regions = umode_map
             .segments()
             .filter_map(HypMapPopulatedRegion::from_user_elf_segment)
             .collect();
