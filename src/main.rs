@@ -31,6 +31,7 @@ mod host_vm_loader;
 mod hyp_map;
 mod smp;
 mod trap;
+mod umode;
 mod vm;
 mod vm_cpu;
 mod vm_id;
@@ -450,8 +451,8 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
         - mem_map.regions().next().unwrap().base().bits();
 
     // Parse the user-mode ELF containing the user-mode task.
-    let user_elf = include_bytes!("../target/riscv64gc-unknown-none-elf/release/umode");
-    let user_map = ElfMap::new(user_elf).expect("Cannot load user-mode ELF");
+    let umode_elf = include_bytes!("../target/riscv64gc-unknown-none-elf/release/umode");
+    let umode_map = ElfMap::new(umode_elf).expect("Cannot load user-mode ELF");
 
     println!("HW memory map:");
     for (i, r) in mem_map.regions().enumerate() {
@@ -464,8 +465,8 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
         );
     }
 
-    println!("USER memory map:");
-    for (i, s) in user_map.segments().enumerate() {
+    println!("UMODE memory map:");
+    for (i, s) in umode_map.segments().enumerate() {
         println!(
             "[{:02}] region: 0x{:016x} -> 0x{:016x}, {}",
             i,
@@ -476,7 +477,7 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     }
 
     // Create the hypervisor mapping starting from the hardware memory map.
-    let hyp_map = HypMap::new(mem_map, user_map);
+    let hyp_map = HypMap::new(mem_map, &umode_map);
 
     // The hypervisor mapping is complete. Can setup paging structures now.
     setup_hyp_paging(hyp_map, &mut hyp_mem);
@@ -495,6 +496,12 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
             println!("Failed to probe IOMMU: {:?}", e);
         }
     };
+
+    let mut umode = umode::UMode::new(umode_map);
+
+    umode.run();
+
+
 
     // Now load the host VM.
     let host = HostVmLoader::new(
