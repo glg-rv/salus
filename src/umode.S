@@ -34,7 +34,7 @@ _run_umode:
     sd   s11, ({host_s11})(a0)
     sd   sp, ({host_sp})(a0)
 
-    /* Swap in task CSRs. */
+    /* Swap in umode CSRs. */
     ld    t1, ({task_sepc})(a0)
     csrw  sepc, t1
 

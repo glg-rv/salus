@@ -7,7 +7,19 @@
 
 extern crate libuser;
 
+use libuser::*;
+
 #[no_mangle]
 extern "C" fn task_main(_data: u64) {
+    println!("----------------------------");
+    println!(" ___________________");
+    println!("< Hello from UMODE! >");
+    println!(" -------------------");
+    println!("        \\   ^__^");
+    println!("         \\  (oo)\\_______");
+    println!("            (__)\\       )\\/\\");
+    println!("                ||----w |");
+    println!("                ||     ||");
+    println!("----------------------------");
     panic!("");
 }

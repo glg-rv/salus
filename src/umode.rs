@@ -7,7 +7,7 @@ use s_mode_utils::print::*;
 use core::arch::global_asm;
 use core::mem::size_of;
 use memoffset::offset_of;
-use riscv_elf::{ElfMap};
+use riscv_elf::ElfMap;
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 
 /// Host GPR and which must be saved/restored when entering/exiting a task.
@@ -20,10 +20,10 @@ struct HostCpuRegs {
     sscratch: u64,
 }
 
-/// UMode GPR and CSR state which must be saved/restored when exiting/entering a task.
+/// Umode GPR and CSR state which must be saved/restored when exiting/entering a task.
 #[derive(Default)]
 #[repr(C)]
-struct UModeCpuRegs {
+struct UmodeCpuRegs {
     gprs: GeneralPurposeRegisters,
     satp: u64,
     sepc: u64,
@@ -41,40 +41,40 @@ struct TrapRegs {
 /// CPU register state that must be saved or restored when entering/exiting a task.
 #[derive(Default)]
 #[repr(C)]
-struct UModeCpuState {
+struct UmodeCpuState {
     host_regs: HostCpuRegs,
-    task_regs: UModeCpuRegs,
+    task_regs: UmodeCpuRegs,
     trap_csrs: TrapRegs,
 }
 
 // The task context switch, defined in task.S
 extern "C" {
-    fn _run_umode(g: *mut UModeCpuState);
+    fn _run_umode(g: *mut UmodeCpuState);
 }
 
 #[allow(dead_code)]
 const fn host_gpr_offset(index: GprIndex) -> usize {
-    offset_of!(UModeCpuState, host_regs)
+    offset_of!(UmodeCpuState, host_regs)
         + offset_of!(HostCpuRegs, gprs)
         + (index as usize) * size_of::<u64>()
 }
 
 #[allow(dead_code)]
 const fn task_gpr_offset(index: GprIndex) -> usize {
-    offset_of!(UModeCpuState, task_regs)
-        + offset_of!(UModeCpuRegs, gprs)
+    offset_of!(UmodeCpuState, task_regs)
+        + offset_of!(UmodeCpuRegs, gprs)
         + (index as usize) * size_of::<u64>()
 }
 
 macro_rules! host_csr_offset {
     ($reg:tt) => {
-        offset_of!(UModeCpuState, host_regs) + offset_of!(HostCpuRegs, $reg)
+        offset_of!(UmodeCpuState, host_regs) + offset_of!(HostCpuRegs, $reg)
     };
 }
 
 macro_rules! task_csr_offset {
     ($reg:tt) => {
-        offset_of!(UModeCpuState, task_regs) + offset_of!(UModeCpuRegs, $reg)
+        offset_of!(UmodeCpuState, task_regs) + offset_of!(UmodeCpuRegs, $reg)
     };
 }
 
@@ -151,27 +151,26 @@ struct ResetArea {
 }
 
 /// Salus UMODE task.
-pub struct UMode {
+pub struct Umode {
     entry: u64,
-    cpu_state: UModeCpuState,
+    cpu_state: UmodeCpuState,
 }
 
-impl UMode {
+impl Umode {
     /// Create a new umode from the ELF map of the user binary.
     pub fn new(umode_map: ElfMap<'static>) -> Self {
-        UMode {
+        println!("UMODE entry at {:016x}\n", umode_map.entry());
+        Umode {
             entry: umode_map.entry(),
-            cpu_state: UModeCpuState::default(),
+            cpu_state: UmodeCpuState::default(),
         }
     }
 
     /// Run this task until it exits
     fn run_to_exit(&mut self) {
-        self.cpu_state.task_regs.sepc = self.entry;
         unsafe {
-            // Safe to run the guest as it only touches memory assigned to it by being owned
-            // by its page table.
-            _run_umode(&mut self.cpu_state as *mut UModeCpuState);
+            // Safe to run umode code as it only touches memory assigned to it through umode mappings.
+            _run_umode(&mut self.cpu_state as *mut UmodeCpuState);
         }
 
         // Save off the trap information.
@@ -179,13 +178,61 @@ impl UMode {
         self.cpu_state.trap_csrs.stval = CSR.stval.get();
     }
 
-    /// Run this guest until it requests an exit or an interrupt is received for the host.
-    pub fn run(&mut self) -> Trap {
+    /// Run `umode` until completion or error.
+    pub fn run(&mut self) -> Result<(), Error> {
+        let regs = &mut self.cpu.state;
+        // Setup Entry
+        regs.task_regs.sepc = self.entry;
         loop {
             self.run_to_exit();
-            match Trap::from_scause(self.cpu_state.trap_csrs.scause).unwrap() {
-                e => {println!("{:?}", e); return e}, // TODO
+            match Trap::from_scause(regs.trap_csrs.scause).unwrap() {
+                Trap::Exception(UserEnvCall) => {
+                    match regs.task_regs.gprs.reg(GprIndex::A0) {
+                        0 => {
+                            
+                        },
+                        1 => {
+                            return;
+                        }
+                        2 => {
+                            if let Some(c) = char::from_u32(regs.task_regs.reg(GprIndex::A1) as u32) {
+                                print!("{}", c);
+                            }
+                        },
+                        _ => {
+                            println!("User env call undefined");
+                        },
+                    }
+                }
+                _ => {
+                    println!("Unexpected Exception");
+                },
             }
+            self.cpu_state.task_regs.sepc += 4;
+        }
+    }
+}
+
+const UMOP_PANIC: u64 = 0;
+const UMOP_RESULT: u64 = 1;
+const UMOP_PUTCHAR: u64 = 2;
+
+pub enum UmodeOp {
+    /// Panic, i.e. unexpected exit.
+    Panic,
+    /// Exit with result code.
+    Result(u64, u64),
+    /// PutChar
+    PutChar(u64),
+}
+
+impl UmodeOp {
+    pub fn from_regs(a: &[u64]) -> Result<Self> {
+        match a[7] -> Result<Self> {
+            UMOP_PANIC => Ok(UmodeOp::Panic),
+            UMOP_RESULT => Ok(UmodeOp::Result(a[0], a[1])),
+            UMOP_PUTCHAR => Ok(UmodeOp::PutChar(a[0])),
+            _ => Err(Error::NotSupported),
         }
     }
 }

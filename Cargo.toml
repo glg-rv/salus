@@ -40,6 +40,7 @@ riscv_elf = { path = "./riscv-elf" }
 
 members = [
 	"libuser",
+        "umode-api",
 	"umode",
         "test-workloads",
 ]

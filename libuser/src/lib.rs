@@ -5,17 +5,51 @@
 #![no_std]
 
 use core::arch::{asm, global_asm};
+use umode_abi::*;
 
 global_asm!(include_str!("task_start.S"));
+
+pub struct UserWriter {}
+
+impl core::fmt::Write for UserWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for c in s.chars() {
+            UmodeEcall::Putchar(c).ecall();
+        }
+        Ok(())
+    }
+}
+
+pub static mut UMODEWRITER: UserWriter = UserWriter {};
+
+#[macro_export]
+macro_rules! print {
+    ($($args:tt)*) => {
+        {
+            use core::fmt::Write;
+            unsafe {
+                write!(&mut UMODEWRITER, $($args)*).unwrap();
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! println {
+    ($($args:tt)*) => {
+        {
+            use core::fmt::Write;
+            unsafe {
+                writeln!(&mut UMODEWRITER, $($args)*).unwrap();
+            }
+        }
+    };
+}
 
 // Loop making ecalls as the kernel will kill the task on an ecall (the only syscall supported is
 // `exit`).
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // Safe to make an ecall that won't return.
-    unsafe {
-        loop {
-            asm!("ecall");
-        }
-    }
+    UmodeEcall::Panic.ecall();
+    unreachable!()
 }

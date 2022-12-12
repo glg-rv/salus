@@ -501,8 +501,6 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
 
     umode.run();
 
-
-
     // Now load the host VM.
     let host = HostVmLoader::new(
         hyp_dt,

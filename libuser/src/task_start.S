@@ -22,6 +22,7 @@ _start:
 
     j 1f
 1:
+    mv a0, zero
     // ecall to exit
     ecall
 
