@@ -19,5 +19,6 @@ _start:
     call task_main
 
     // ecall to exit
+    mv a0, zero
     ecall
 
