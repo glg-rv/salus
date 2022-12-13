@@ -6,6 +6,7 @@
 
 //! Salus HS <-> HU API.
 
+/// HU -> HS API.
 pub mod hypcall;
 
 /// Error for API functions.

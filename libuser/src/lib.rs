@@ -6,9 +6,8 @@
 
 mod hypcalls;
 
-use crate::hypcalls::hyp_putchar;
+use crate::hypcalls::*;
 use core::arch::global_asm;
-use umode_api::hypcall::*;
 
 global_asm!(include_str!("task_start.S"));
 
@@ -30,6 +29,7 @@ macro_rules! print {
     ($($args:tt)*) => {
         {
             use core::fmt::Write;
+            // TODO: WRITE SAFE REASON
             unsafe {
                 write!(&mut UMODEWRITER, $($args)*).unwrap();
             }
@@ -42,6 +42,7 @@ macro_rules! println {
     ($($args:tt)*) => {
         {
             use core::fmt::Write;
+            // TODO: WRITE SAFE REASON
             unsafe {
                 writeln!(&mut UMODEWRITER, $($args)*).unwrap();
             }
@@ -53,6 +54,6 @@ macro_rules! println {
 // `exit`).
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    HypCall::Base(BaseExtension::Panic);
+    hyp_panic();
     unreachable!()
 }

@@ -10,8 +10,8 @@ use core::ops::ControlFlow;
 use memoffset::offset_of;
 use riscv_elf::ElfMap;
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
+use riscv_regs::Exception::UserEnvCall;
 use spin::{Mutex, MutexGuard, Once};
-use umode_api::hypcall::*;
 
 /// Host GPR and which must be saved/restored when entering/exiting a task.
 #[derive(Default)]

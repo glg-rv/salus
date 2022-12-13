@@ -27,6 +27,14 @@ pub unsafe fn hyp_call(hypc: &HypCall) -> Result<u64, HypCallError> {
     HypReturn::from_regs(&args).into()
 }
 
+/// Print a character.
 pub fn hyp_putchar(c: char) {
-    let hypc = HypCall::Base(BaseExtension::PutChar(c as u8));
+    let hypc = HypCall::Base(BaseExt::PutChar(c as u8));
+    // TODO: ecall!
+}
+
+/// Panic and exit immediately.
+pub fn hyp_panic() {
+    HypCall::Base(BaseExt::Panic);
+    // TODO: ecall!
 }
