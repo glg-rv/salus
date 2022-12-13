@@ -5,14 +5,17 @@
 use crate::Error;
 
 /// Trait to be defined to create a set of hypercalls.
-pub trait HypCallExtension: Sized {
+pub trait HypCallExt: Sized {
+    /// Transform into registers. Called from umode.
     fn from_regs(args: &[u64]) -> Result<Self, Error>;
+    /// Build from registers. Called from hypervisor.
     fn to_regs(&self, args: &mut [u64]);
 }
 
 /// Calls from umode to the hypervisors.
 pub enum HypCall {
-    Base(BaseExtension),
+    /// Base API. Needed for execution of umode.
+    Base(BaseExt),
     //    Demo(DemoFunction),
 }
 
@@ -27,8 +30,8 @@ impl HypCall {
     pub fn from_regs(args: &[u64]) -> Result<HypCall, Error> {
         use HypCall::*;
         match args[7] {
-            HCEXT_BASE => Ok(Base(BaseExtension::from_regs(&args[0..6])?)),
-            //            HCEXT_DEMO => Ok(Demo(DemoExtension::from_regs(&mut args[0..6])?)),
+            HCEXT_BASE => Ok(Base(BaseExt::from_regs(&args[0..6])?)),
+            //            HCEXT_DEMO => Ok(Demo(DemoExt::from_regs(&mut args[0..6])?)),
             _ => Err(Error::UnknownExtension),
         }
     }
@@ -59,7 +62,7 @@ pub enum HypCallError {
 }
 
 impl HypCallError {
-    pub fn from_code(e: u64) -> Self {
+    fn from_code(e: u64) -> Self {
         use HypCallError::*;
         match e {
             1 => Failed,
@@ -125,21 +128,23 @@ impl From<HypReturn> for Result<u64, HypCallError> {
 }
 
 /// The base extension of hypcalls. Necessary for basic runtime operations.
-pub enum BaseExtension {
+pub enum BaseExt {
+    /// Panic and exit immediately.
     Panic,
+    /// Print a character for debug.
     PutChar(u8),
 }
 
 const HYPC_BASE_PANIC: u64 = 0;
 const HYPC_BASE_PUTCHAR: u64 = 1;
 
-impl HypCallExtension for BaseExtension {
+impl HypCallExt for BaseExt {
     fn to_regs(&self, regs: &mut [u64]) {
         match self {
-            BaseExtension::Panic => {
+            BaseExt::Panic => {
                 regs[0] = HYPC_BASE_PANIC;
             }
-            BaseExtension::PutChar(byte) => {
+            BaseExt::PutChar(byte) => {
                 regs[0] = HYPC_BASE_PUTCHAR;
                 regs[1] = *byte as u64;
             }
@@ -148,8 +153,8 @@ impl HypCallExtension for BaseExtension {
 
     fn from_regs(regs: &[u64]) -> Result<Self, Error> {
         match regs[0] {
-            HYPC_BASE_PANIC => Ok(BaseExtension::Panic),
-            HYPC_BASE_PUTCHAR => Ok(BaseExtension::PutChar(regs[1] as u8)),
+            HYPC_BASE_PANIC => Ok(BaseExt::Panic),
+            HYPC_BASE_PUTCHAR => Ok(BaseExt::PutChar(regs[1] as u8)),
             _ => Err(Error::NotSupported),
         }
     }
