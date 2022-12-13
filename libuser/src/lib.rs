@@ -4,8 +4,11 @@
 
 #![no_std]
 
-use core::arch::{asm, global_asm};
-use umode_abi::*;
+mod hypcalls;
+
+use crate::hypcalls::hyp_putchar;
+use core::arch::global_asm;
+use umode_api::hypcall::*;
 
 global_asm!(include_str!("task_start.S"));
 
@@ -14,7 +17,7 @@ pub struct UserWriter {}
 impl core::fmt::Write for UserWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for c in s.chars() {
-            UmodeEcall::Putchar(c).ecall();
+            hyp_putchar(c);
         }
         Ok(())
     }
@@ -50,6 +53,6 @@ macro_rules! println {
 // `exit`).
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    UmodeEcall::Panic.ecall();
+    HypCall::Base(BaseExtension::Panic);
     unreachable!()
 }

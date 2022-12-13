@@ -497,9 +497,17 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
         }
     };
 
-    let mut umode = umode::UMode::new(umode_map);
+    // Initialize Umode.
+    umode::Umode::init(umode_map);
 
-    umode.run();
+    // Install umode in the current cpu.
+    // Unwrap okay: it has been called after `Umode::init()`
+    PerCpu::this_cpu().set_umode(umode::Umode::new_per_cpu_umode());
+
+    {
+        println!("Running UMODE GIANLUCA");
+        PerCpu::this_cpu().umode().activate().run();
+    }
 
     // Now load the host VM.
     let host = HostVmLoader::new(
@@ -539,8 +547,16 @@ extern "C" fn secondary_init(_hart_id: u64) {
     }
     Imsic::setup_this_cpu();
 
+    // Unwrap okay: it has been called after `Umode::init()`
+    PerCpu::this_cpu().set_umode(umode::Umode::new_per_cpu_umode());
+
     let me = PerCpu::this_cpu();
     me.set_online();
+
+    {
+        println!("Running UMODE GIANLUCA");
+        PerCpu::this_cpu().umode().activate().run();
+    }
 
     HOST_VM.wait().run(me.cpu_id().raw() as u64);
     poweroff();
