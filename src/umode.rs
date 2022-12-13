@@ -6,9 +6,12 @@ use s_mode_utils::print::*;
 
 use core::arch::global_asm;
 use core::mem::size_of;
+use core::ops::ControlFlow;
 use memoffset::offset_of;
 use riscv_elf::ElfMap;
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
+use spin::{Mutex, MutexGuard, Once};
+use umode_api::hypcall::*;
 
 /// Host GPR and which must be saved/restored when entering/exiting a task.
 #[derive(Default)]
@@ -41,40 +44,40 @@ struct TrapRegs {
 /// CPU register state that must be saved or restored when entering/exiting a task.
 #[derive(Default)]
 #[repr(C)]
-struct UmodeCpuState {
+struct UmodeCpuArchState {
     host_regs: HostCpuRegs,
     task_regs: UmodeCpuRegs,
     trap_csrs: TrapRegs,
 }
 
-// The task context switch, defined in task.S
 extern "C" {
-    fn _run_umode(g: *mut UmodeCpuState);
+    // umode context switch. Defined in umode.S
+    fn _run_umode(g: *mut UmodeCpuArchState);
 }
 
 #[allow(dead_code)]
 const fn host_gpr_offset(index: GprIndex) -> usize {
-    offset_of!(UmodeCpuState, host_regs)
+    offset_of!(UmodeCpuArchState, host_regs)
         + offset_of!(HostCpuRegs, gprs)
         + (index as usize) * size_of::<u64>()
 }
 
 #[allow(dead_code)]
 const fn task_gpr_offset(index: GprIndex) -> usize {
-    offset_of!(UmodeCpuState, task_regs)
+    offset_of!(UmodeCpuArchState, task_regs)
         + offset_of!(UmodeCpuRegs, gprs)
         + (index as usize) * size_of::<u64>()
 }
 
 macro_rules! host_csr_offset {
     ($reg:tt) => {
-        offset_of!(UmodeCpuState, host_regs) + offset_of!(HostCpuRegs, $reg)
+        offset_of!(UmodeCpuArchState, host_regs) + offset_of!(HostCpuRegs, $reg)
     };
 }
 
 macro_rules! task_csr_offset {
     ($reg:tt) => {
-        offset_of!(UmodeCpuState, task_regs) + offset_of!(UmodeCpuRegs, $reg)
+        offset_of!(UmodeCpuArchState, task_regs) + offset_of!(UmodeCpuRegs, $reg)
     };
 }
 
@@ -139,6 +142,11 @@ global_asm!(
     task_sepc = const task_csr_offset!(sepc),
 );
 
+pub enum Error {
+    Panic,
+    UnexpectedTrap,
+}
+
 /// A structure representing an area to reset after each execution.
 struct ResetArea {
     /// Virtual Address start
@@ -150,19 +158,86 @@ struct ResetArea {
     data: &'static [u8],
 }
 
+/// The UMODE task loaded.
+static UMODE_TASK: Once<Umode> = Once::new();
+
 /// Salus UMODE task.
 pub struct Umode {
     entry: u64,
-    cpu_state: UmodeCpuState,
 }
 
 impl Umode {
     /// Create a new umode from the ELF map of the user binary.
-    pub fn new(umode_map: ElfMap<'static>) -> Self {
+    pub fn init(umode_map: ElfMap<'static>) {
         println!("UMODE entry at {:016x}\n", umode_map.entry());
-        Umode {
+        let umode = Umode {
             entry: umode_map.entry(),
-            cpu_state: UmodeCpuState::default(),
+        };
+        UMODE_TASK.call_once(|| umode);
+    }
+
+    /// Create a new umode runner. This must be done once on every
+    /// physical CPU.This can be called after `Umode::init()` has been
+    /// called.
+    pub fn new_per_cpu_umode() -> PerCpuUmode<'static> {
+        PerCpuUmode {
+            // Unwrap okay. This will be called after init().
+            umode: UMODE_TASK.get().unwrap(),
+            arch: Mutex::new(UmodeCpuArchState::default()),
+        }
+    }
+}
+
+/// Per-CPU Umode structure.
+pub struct PerCpuUmode<'um> {
+    umode: &'um Umode,
+    arch: Mutex<UmodeCpuArchState>,
+}
+
+impl<'um> PerCpuUmode<'um> {
+    pub fn activate(&self) -> ActiveUmode {
+        let mut arch = self.arch.lock();
+        // Setup Entry
+        arch.task_regs.sepc = self.umode.entry;
+        ActiveUmode {
+            this_umode: self,
+            arch,
+        }
+    }
+}
+
+pub struct ActiveUmode<'um> {
+    this_umode: &'um PerCpuUmode<'um>,
+    arch: MutexGuard<'um, UmodeCpuArchState>,
+}
+
+impl<'um> Drop for ActiveUmode<'um> {
+    fn drop(&mut self) {
+        self.reset();
+    }
+}
+
+impl<'um> ActiveUmode<'um> {
+    fn handle_ecall(&self) -> ControlFlow<Error> {
+        // Ecall always exits for now.
+        println!("ecall");
+        ControlFlow::Break(Error::Panic)
+        // NB: increment sepc if continue
+    }
+
+    /// Run `umode` until completion or error.
+    pub fn run(&mut self) -> Result<(), Error> {
+        loop {
+            self.run_to_exit();
+            match Trap::from_scause(self.arch.trap_csrs.scause).unwrap() {
+                Trap::Exception(UserEnvCall) => match self.handle_ecall() {
+                    ControlFlow::Continue(_) => continue,
+                    ControlFlow::Break(err) => break Err(err),
+                },
+                _ => {
+                    break Err(Error::UnexpectedTrap);
+                }
+            }
         }
     }
 
@@ -170,69 +245,15 @@ impl Umode {
     fn run_to_exit(&mut self) {
         unsafe {
             // Safe to run umode code as it only touches memory assigned to it through umode mappings.
-            _run_umode(&mut self.cpu_state as *mut UmodeCpuState);
+            _run_umode(&mut *self.arch as *mut UmodeCpuArchState);
         }
 
         // Save off the trap information.
-        self.cpu_state.trap_csrs.scause = CSR.scause.get();
-        self.cpu_state.trap_csrs.stval = CSR.stval.get();
+        self.arch.trap_csrs.scause = CSR.scause.get();
+        self.arch.trap_csrs.stval = CSR.stval.get();
     }
 
-    /// Run `umode` until completion or error.
-    pub fn run(&mut self) -> Result<(), Error> {
-        let regs = &mut self.cpu.state;
-        // Setup Entry
-        regs.task_regs.sepc = self.entry;
-        loop {
-            self.run_to_exit();
-            match Trap::from_scause(regs.trap_csrs.scause).unwrap() {
-                Trap::Exception(UserEnvCall) => {
-                    match regs.task_regs.gprs.reg(GprIndex::A0) {
-                        0 => {
-                            
-                        },
-                        1 => {
-                            return;
-                        }
-                        2 => {
-                            if let Some(c) = char::from_u32(regs.task_regs.reg(GprIndex::A1) as u32) {
-                                print!("{}", c);
-                            }
-                        },
-                        _ => {
-                            println!("User env call undefined");
-                        },
-                    }
-                }
-                _ => {
-                    println!("Unexpected Exception");
-                },
-            }
-            self.cpu_state.task_regs.sepc += 4;
-        }
-    }
-}
-
-const UMOP_PANIC: u64 = 0;
-const UMOP_RESULT: u64 = 1;
-const UMOP_PUTCHAR: u64 = 2;
-
-pub enum UmodeOp {
-    /// Panic, i.e. unexpected exit.
-    Panic,
-    /// Exit with result code.
-    Result(u64, u64),
-    /// PutChar
-    PutChar(u64),
-}
-
-impl UmodeOp {
-    pub fn from_regs(a: &[u64]) -> Result<Self> {
-        match a[7] -> Result<Self> {
-            UMOP_PANIC => Ok(UmodeOp::Panic),
-            UMOP_RESULT => Ok(UmodeOp::Result(a[0], a[1])),
-            UMOP_PUTCHAR => Ok(UmodeOp::PutChar(a[0])),
-            _ => Err(Error::NotSupported),
-        }
+    fn reset(&mut self) {
+        // TODO: Reset umode writable mappings.
     }
 }

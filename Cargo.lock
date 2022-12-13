@@ -587,6 +587,7 @@ dependencies = [
  "sbi",
  "sha2 0.10.2",
  "spin",
+ "umode_api",
 ]
 
 [[package]]

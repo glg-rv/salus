@@ -4,10 +4,16 @@
 
 use crate::Error;
 
+/// Trait to be defined to create a set of hypercalls.
+pub trait HypCallExtension: Sized {
+    fn from_regs(args: &[u64]) -> Result<Self, Error>;
+    fn to_regs(&self, args: &mut [u64]);
+}
+
 /// Calls from umode to the hypervisors.
 pub enum HypCall {
-    Base(BaseFunction),
-    Demo(DemoFunction),
+    Base(BaseExtension),
+    //    Demo(DemoFunction),
 }
 
 // Hypercall base calls for umode runtime (always implemented).
@@ -17,27 +23,29 @@ const HCEXT_DEMO: u64 = 255;
 
 impl HypCall {
     // Called from hypervisor
-    fn from_regs(args: &[u64; 7]) -> Result<HypFunction, Error> {
+    /// Create an hypercall structure from registers.    
+    pub fn from_regs(args: &[u64]) -> Result<HypCall, Error> {
+        use HypCall::*;
         match args[7] {
-            HCEXT_BASE => BaseFunction::from_regs(args[0..6]).map(HypCall::Base),
-            HCEXT_DEMO => DemoFunction::from_regs(args[0..6]).map(HypCall::Base),
-            _ => Err(Error::UknownExtension),
+            HCEXT_BASE => Ok(Base(BaseExtension::from_regs(&args[0..6])?)),
+            //            HCEXT_DEMO => Ok(Demo(DemoExtension::from_regs(&mut args[0..6])?)),
+            _ => Err(Error::UnknownExtension),
         }
     }
 
     // Called from umode
-    fn to_regs(&self) -> [u64; 7] {
-        let args = [0u64; 7];
-        match *self {
-            Base(function) => {
-                a[7] = HCEXT_BASE;
-                function.to_regs(&args[0..6]);
-            }
-            Demo(function) => {
-                a[7] = HCEXT_DEMO;
-                function.to_regs(&args[0..6]);
-            }
-        }
+    /// Translate a `self` to registers.
+    pub fn to_regs(&self, args: &mut [u64]) {
+        match self {
+            HypCall::Base(function) => {
+                args[7] = HCEXT_BASE;
+                function.to_regs(&mut args[0..6]);
+            } /*            HypCall::Demo(function) => {
+                              args[7] = HCEXT_DEMO;
+                              function.to_regs(&mut args[0..6]);
+                          }
+              */
+        };
     }
 }
 
@@ -66,34 +74,33 @@ const HYPC_SUCCESS: u64 = 0;
 
 /// Return type for hypcalls. Sent through A-registers, maps into a Result<u64, HypCallError>.
 pub struct HypReturn {
-    code: u64;
-    value: u64;
+    error_code: u64,
+    return_value: u64,
 }
 
 impl HypReturn {
-    fn from_regs(ret_args: &[u64; 2]) -> Self {
+    /// Create a `HypReturn` from registers.
+    pub fn from_regs(ret_args: &[u64]) -> Self {
         Self {
-            error_code = ret_args[0];
-            return_value = ret_args[1];
+            error_code: ret_args[0],
+            return_value: ret_args[1],
         }
     }
 
-    fn to_regs(&self) -> [u64; 2] {
-        let mut ret_args = [u64; 2];
-        ret_args[0] = self.code;
-        ret_args[1] = self.value;
+    /// Translate `self` into registers.
+    pub fn to_regs(&self, args: &mut [u64]) {
+        args[0] = self.error_code;
+        args[1] = self.return_value;
     }
 }
 
-impl From<Result<u64>> for HypReturn {
-    fn from(result: Result<u64>) -> HypReturn {
+impl From<Result<u64, HypCallError>> for HypReturn {
+    fn from(result: Result<u64, HypCallError>) -> HypReturn {
         match result {
-            Ok(rv) => {
-                Self {
-                    error_code: HYPC_SUCCESS;
-                    error_value: rv,
-                }
-            }
+            Ok(rv) => Self {
+                error_code: HYPC_SUCCESS,
+                return_value: rv,
+            },
             Err(e) => Self::from(e),
         }
     }
@@ -108,11 +115,42 @@ impl From<HypCallError> for HypReturn {
     }
 }
 
-impl From<HypReturn> for Result<u64> {
-    fn from(hyp_ret: HypReturn) -> Result<u64) {
+impl From<HypReturn> for Result<u64, HypCallError> {
+    fn from(hyp_ret: HypReturn) -> Result<u64, HypCallError> {
         match hyp_ret.error_code {
             HYPC_SUCCESS => Ok(hyp_ret.return_value),
             e => Err(HypCallError::from_code(e)),
+        }
+    }
+}
+
+/// The base extension of hypcalls. Necessary for basic runtime operations.
+pub enum BaseExtension {
+    Panic,
+    PutChar(u8),
+}
+
+const HYPC_BASE_PANIC: u64 = 0;
+const HYPC_BASE_PUTCHAR: u64 = 1;
+
+impl HypCallExtension for BaseExtension {
+    fn to_regs(&self, regs: &mut [u64]) {
+        match self {
+            BaseExtension::Panic => {
+                regs[0] = HYPC_BASE_PANIC;
+            }
+            BaseExtension::PutChar(byte) => {
+                regs[0] = HYPC_BASE_PUTCHAR;
+                regs[1] = *byte as u64;
+            }
+        }
+    }
+
+    fn from_regs(regs: &[u64]) -> Result<Self, Error> {
+        match regs[0] {
+            HYPC_BASE_PANIC => Ok(BaseExtension::Panic),
+            HYPC_BASE_PUTCHAR => Ok(BaseExtension::PutChar(regs[1] as u8)),
+            _ => Err(Error::NotSupported),
         }
     }
 }

@@ -13,6 +13,7 @@ use sbi::api::state;
 use spin::Once;
 
 use crate::hyp_map::HypPageTable;
+use crate::umode::PerCpuUmode;
 use crate::vm_id::VmIdTracker;
 
 // The secondary CPU entry point, defined in start.S.
@@ -27,6 +28,7 @@ pub struct PerCpu {
     cpu_id: CpuId,
     vmid_tracker: RefCell<VmIdTracker>,
     page_table: Once<HypPageTable>,
+    umode: Once<PerCpuUmode<'static>>,
     online: Once<bool>,
 }
 
@@ -66,6 +68,7 @@ impl PerCpu {
                 cpu_id,
                 vmid_tracker: RefCell::new(VmIdTracker::new()),
                 page_table: Once::new(),
+                umode: Once::new(),
                 online: Once::new(),
             };
             // Safety: ptr is guaranteed to be properly aligned and point to valid memory owned by
@@ -122,9 +125,9 @@ impl PerCpu {
         }
     }
 
-    /// Returns this CPU's ID.
-    pub fn cpu_id(&self) -> CpuId {
-        self.cpu_id
+    /// Initialize the physical CPU umode structure.
+    pub fn set_umode(&self, cpu_umode: PerCpuUmode<'static>) {
+        self.umode.call_once(|| cpu_umode);
     }
 
     /// Marks this CPU as online.
@@ -132,11 +135,22 @@ impl PerCpu {
         self.online.call_once(|| true);
     }
 
+    /// Returns this CPU's ID.
+    pub fn cpu_id(&self) -> CpuId {
+        self.cpu_id
+    }
+
     /// Get the CPU page table. Must be called after `set_cpu_page_table` has been called for this
     /// cpu.
     pub fn page_table(&self) -> &HypPageTable {
         // Unwrap okay: this is called after `set_cpu_page_table`
         self.page_table.get().unwrap()
+    }
+
+    /// Get the CPU umode structure. Must be called after `set_umode` has been called for this cpu.
+    pub fn umode(&self) -> &PerCpuUmode {
+        // Unwrap okay: this is called after `set_cpu_page_table`
+        self.umode.get().unwrap()
     }
 
     /// Returns a mutable reference to this CPU's VMID tracker.
