@@ -4,13 +4,14 @@
 
 use s_mode_utils::print::*;
 
+use crate::smp::PerCpu;
 use core::arch::global_asm;
 use core::mem::size_of;
 use core::ops::ControlFlow;
 use memoffset::offset_of;
 use riscv_elf::ElfMap;
-use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use riscv_regs::Exception::UserEnvCall;
+use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use spin::{Mutex, MutexGuard, Once};
 use umode_api::hypcall::*;
 
@@ -54,9 +55,7 @@ impl UmodeCpuArchState {
         let uf = &self.task_regs;
         println!(
             "SEPC: 0x{:016x}, SCAUSE: 0x{:016x}, STVAL: 0x{:016x}",
-            uf.sepc,
-            self.trap_csrs.scause,
-            self.trap_csrs.stval,
+            uf.sepc, self.trap_csrs.scause, self.trap_csrs.stval,
         );
         use GprIndex::*;
         println!(
@@ -214,21 +213,10 @@ pub enum Error {
     UnexpectedTrap,
 }
 
-/// A structure representing an area to reset after each execution.
-struct ResetArea {
-    /// Virtual Address start
-    vaddr: u64,
-    /// Size of the reset area.
-    size: usize,
-    /// Data that must be copied for reset. In case this is smaller than the area, the rest of the
-    /// area will be zeroed.
-    data: &'static [u8],
-}
-
-/// The loaded UMODE task.
+/// The loaded U-mode task.
 static UMODE_TASK: Once<Umode> = Once::new();
 
-/// Salus UMODE task.
+/// Salus U-mode task.
 pub struct Umode {
     entry: u64,
 }
@@ -236,7 +224,7 @@ pub struct Umode {
 impl Umode {
     /// Create a new umode from the ELF map of the user binary.
     pub fn init(umode_map: ElfMap<'static>) {
-        println!("UMODE entry at {:016x}\n", umode_map.entry());
+        println!("U-mode entry at {:016x}\n", umode_map.entry());
         let umode = Umode {
             entry: umode_map.entry(),
         };
@@ -279,7 +267,7 @@ pub struct ActiveUmode<'um> {
 
 impl<'um> Drop for ActiveUmode<'um> {
     fn drop(&mut self) {
-        self.reset();
+        PerCpu::this_cpu().page_table().umode_reset();
     }
 }
 
@@ -294,26 +282,24 @@ impl<'um> ActiveUmode<'um> {
     fn handle_base_ext(&mut self, base_ext: BaseFunc) -> ControlFlow<Result<(), Error>> {
         match base_ext {
             BaseFunc::Panic => {
-                println!("UMODE panic!");
+                println!("U-mode panic!");
                 self.arch.print();
                 ControlFlow::Break(Err(Error::Panic))
-            },
+            }
             BaseFunc::PutChar(byte) => {
                 if let Some(c) = char::from_u32(byte as u32) {
                     print!("{}", c);
                 }
                 self.set_ecall_result(Ok(0));
                 ControlFlow::Continue(())
-            },
+            }
         }
     }
 
     fn handle_ecall(&mut self) -> ControlFlow<Result<(), Error>> {
         match HypCall::from_regs(self.arch.task_regs.gprs.a_regs()) {
-            Ok(hypcall) => {
-                match hypcall {
-                    HypCall::Base(base_func) => self.handle_base_ext(base_func)
-                }
+            Ok(hypcall) => match hypcall {
+                HypCall::Base(base_func) => self.handle_base_ext(base_func),
             },
             Err(err) => {
                 self.set_ecall_result(Err(err));
@@ -347,9 +333,5 @@ impl<'um> ActiveUmode<'um> {
         // Save off the trap information.
         self.arch.trap_csrs.scause = CSR.scause.get();
         self.arch.trap_csrs.stval = CSR.stval.get();
-    }
-
-    fn reset(&mut self) {
-        // TODO: Reset umode writable mappings.
     }
 }
