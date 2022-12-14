@@ -249,19 +249,17 @@ pub struct PerCpuUmode<'um> {
 }
 
 impl<'um> PerCpuUmode<'um> {
-    pub fn activate(&self) -> ActiveUmode {
-        let mut arch = self.arch.lock();
+    pub fn activate(&self) -> Option<ActiveUmode> {
+        let mut arch = self.arch.try_lock()?;
         // Setup Entry
         arch.task_regs.sepc = self.umode.entry;
-        ActiveUmode {
-            this_umode: self,
+        Some(ActiveUmode {
             arch,
-        }
+        })
     }
 }
 
 pub struct ActiveUmode<'um> {
-    this_umode: &'um PerCpuUmode<'um>,
     arch: MutexGuard<'um, UmodeCpuArchState>,
 }
 

@@ -108,6 +108,7 @@ struct UmodeResetArea {
 
 impl UmodeResetArea {
     fn reset(&self) {
+        // GIANLUCA: RESET TO END OF PAGE FOR SAFETY.
         let dest = self.paddr.bits() as *mut u8;
         // Clear memory first.
         // Safety: `dest` is `size` bytes in long. The memory is owned by the hypervisor, by
