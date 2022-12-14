@@ -2,12 +2,10 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::Error;
-
-/// Trait to be defined to create a set of hypercalls.
+/// Trait to be defined to create a hypercall extension.
 pub trait HypCallExt: Sized {
     /// Transform into registers. Called from umode.
-    fn from_regs(args: &[u64]) -> Result<Self, Error>;
+    fn from_regs(args: &[u64]) -> Result<Self, HypCallError>;
     /// Build from registers. Called from hypervisor.
     fn to_regs(&self, args: &mut [u64]);
 }
@@ -15,29 +13,27 @@ pub trait HypCallExt: Sized {
 /// Calls from umode to the hypervisors.
 pub enum HypCall {
     /// Base API. Needed for execution of umode.
-    Base(BaseExt),
+    Base(BaseFunc),
     //    Demo(DemoFunction),
 }
 
 // Hypercall base calls for umode runtime (always implemented).
 const HCEXT_BASE: u64 = 0;
 // Note: Insert other extensions per functionality here.
-const HCEXT_DEMO: u64 = 255;
+//const HCEXT_DEMO: u64 = 255;
 
 impl HypCall {
-    // Called from hypervisor
-    /// Create an hypercall structure from registers.    
-    pub fn from_regs(args: &[u64]) -> Result<HypCall, Error> {
+    /// Create an hypercall structure from registers. Called from hypervisor.
+    pub fn from_regs(args: &[u64]) -> Result<HypCall, HypCallError> {
         use HypCall::*;
         match args[7] {
-            HCEXT_BASE => Ok(Base(BaseExt::from_regs(&args[0..6])?)),
-            //            HCEXT_DEMO => Ok(Demo(DemoExt::from_regs(&mut args[0..6])?)),
-            _ => Err(Error::UnknownExtension),
+            HCEXT_BASE => Ok(Base(BaseFunc::from_regs(&args[0..6])?)),
+            //            HCEXT_DEMO => Ok(Demo(DemoFunc::from_regs(&mut args[0..6])?)),
+            _ => Err(HypCallError::UnknownExtension)
         }
     }
 
-    // Called from umode
-    /// Translate a `self` to registers.
+    /// Translate a `self` to registers. Called from umode.
     pub fn to_regs(&self, args: &mut [u64]) {
         match self {
             HypCall::Base(function) => {
@@ -59,6 +55,8 @@ pub enum HypCallError {
     Failed = 1,
     /// HypCall not supported by hypervisor.
     NotSupported = 2,
+    /// HypCall extension not implemented.
+    UnknownExtension,
 }
 
 impl HypCallError {
@@ -128,7 +126,7 @@ impl From<HypReturn> for Result<u64, HypCallError> {
 }
 
 /// The base extension of hypcalls. Necessary for basic runtime operations.
-pub enum BaseExt {
+pub enum BaseFunc {
     /// Panic and exit immediately.
     Panic,
     /// Print a character for debug.
@@ -138,24 +136,24 @@ pub enum BaseExt {
 const HYPC_BASE_PANIC: u64 = 0;
 const HYPC_BASE_PUTCHAR: u64 = 1;
 
-impl HypCallExt for BaseExt {
+impl HypCallExt for BaseFunc {
     fn to_regs(&self, regs: &mut [u64]) {
         match self {
-            BaseExt::Panic => {
+            BaseFunc::Panic => {
                 regs[0] = HYPC_BASE_PANIC;
             }
-            BaseExt::PutChar(byte) => {
+            BaseFunc::PutChar(byte) => {
                 regs[0] = HYPC_BASE_PUTCHAR;
                 regs[1] = *byte as u64;
             }
         }
     }
 
-    fn from_regs(regs: &[u64]) -> Result<Self, Error> {
+    fn from_regs(regs: &[u64]) -> Result<Self, HypCallError> {
         match regs[0] {
-            HYPC_BASE_PANIC => Ok(BaseExt::Panic),
-            HYPC_BASE_PUTCHAR => Ok(BaseExt::PutChar(regs[1] as u8)),
-            _ => Err(Error::NotSupported),
+            HYPC_BASE_PANIC => Ok(BaseFunc::Panic),
+            HYPC_BASE_PUTCHAR => Ok(BaseFunc::PutChar(regs[1] as u8)),
+            _ => Err(HypCallError::NotSupported),
         }
     }
 }

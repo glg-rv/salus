@@ -17,7 +17,7 @@ use umode_api::hypcall::*;
 /// In addition the caller is placing trust in the firmware or hypervisor to maintain the promises
 /// of the interface w.r.t. reading and writing only within the provided bounds.
 pub unsafe fn hyp_call(hypc: &HypCall) -> Result<u64, HypCallError> {
-    let mut args = [0u64; 7];
+    let mut args = [0u64; 8];
     hypc.to_regs(&mut args);
     asm!("ecall", inlateout("a0") args[0], inlateout("a1") args[1],
                 in("a2")args[2], in("a3") args[3],
@@ -29,12 +29,16 @@ pub unsafe fn hyp_call(hypc: &HypCall) -> Result<u64, HypCallError> {
 
 /// Print a character.
 pub fn hyp_putchar(c: char) {
-    let hypc = HypCall::Base(BaseExt::PutChar(c as u8));
-    // TODO: ecall!
+    let hypc = HypCall::Base(BaseFunc::PutChar(c as u8));
+    // Safety: This does not contain any memory reference.
+    unsafe { hyp_call(&hypc) };
+    // Allow putchar to fail. Ignore return.
 }
 
 /// Panic and exit immediately.
 pub fn hyp_panic() {
-    HypCall::Base(BaseExt::Panic);
-    // TODO: ecall!
+    let hypc = HypCall::Base(BaseFunc::Panic);
+    // Safety: This does not contain any memory reference.
+    unsafe { hyp_call(&hypc) };
+    unreachable!();
 }
