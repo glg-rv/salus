@@ -9,10 +9,3 @@
 /// HU -> HS API.
 pub mod hypcall;
 
-/// Error for API functions.
-pub enum Error {
-    /// The API extension called is not supported.
-    UnknownExtension,
-    /// Request/HyperCall Not Supported.
-    NotSupported,
-}

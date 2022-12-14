@@ -12,13 +12,13 @@ use riscv_elf::ElfMap;
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use riscv_regs::Exception::UserEnvCall;
 use spin::{Mutex, MutexGuard, Once};
+use umode_api::hypcall::*;
 
 /// Host GPR and which must be saved/restored when entering/exiting a task.
 #[derive(Default)]
 #[repr(C)]
 struct HostCpuRegs {
     gprs: GeneralPurposeRegisters,
-    satp: u64,
     stvec: u64,
     sscratch: u64,
 }
@@ -28,7 +28,6 @@ struct HostCpuRegs {
 #[repr(C)]
 struct UmodeCpuRegs {
     gprs: GeneralPurposeRegisters,
-    satp: u64,
     sepc: u64,
 }
 
@@ -48,6 +47,74 @@ struct UmodeCpuArchState {
     host_regs: HostCpuRegs,
     task_regs: UmodeCpuRegs,
     trap_csrs: TrapRegs,
+}
+
+impl UmodeCpuArchState {
+    fn print(&self) {
+        let uf = &self.task_regs;
+        println!(
+            "SEPC: 0x{:016x}, SCAUSE: 0x{:016x}, STVAL: 0x{:016x}",
+            uf.sepc,
+            self.trap_csrs.scause,
+            self.trap_csrs.stval,
+        );
+        use GprIndex::*;
+        println!(
+            "RA:  0x{:016x}, GP:  0x{:016x}, TP:  0x{:016x}, S0:  0x{:016x}",
+            uf.gprs.reg(RA),
+            uf.gprs.reg(GP),
+            uf.gprs.reg(TP),
+            uf.gprs.reg(S0)
+        );
+        println!(
+            "S1:  0x{:016x}, A0:  0x{:016x}, A1:  0x{:016x}, A2:  0x{:016x}",
+            uf.gprs.reg(S1),
+            uf.gprs.reg(A0),
+            uf.gprs.reg(A1),
+            uf.gprs.reg(A2)
+        );
+        println!(
+            "A3:  0x{:016x}, A4:  0x{:016x}, A5:  0x{:016x}, A6:  0x{:016x}",
+            uf.gprs.reg(A3),
+            uf.gprs.reg(A4),
+            uf.gprs.reg(A5),
+            uf.gprs.reg(A6)
+        );
+        println!(
+            "A7:  0x{:016x}, S2:  0x{:016x}, S3:  0x{:016x}, S4:  0x{:016x}",
+            uf.gprs.reg(A7),
+            uf.gprs.reg(S2),
+            uf.gprs.reg(S3),
+            uf.gprs.reg(S4)
+        );
+        println!(
+            "S5:  0x{:016x}, S6:  0x{:016x}, S7:  0x{:016x}, S8:  0x{:016x}",
+            uf.gprs.reg(S5),
+            uf.gprs.reg(S6),
+            uf.gprs.reg(S7),
+            uf.gprs.reg(S8)
+        );
+        println!(
+            "S9:  0x{:016x}, S10: 0x{:016x}, S11: 0x{:016x}, T0:  0x{:016x}",
+            uf.gprs.reg(S9),
+            uf.gprs.reg(S10),
+            uf.gprs.reg(S11),
+            uf.gprs.reg(T0)
+        );
+        println!(
+            "T1:  0x{:016x}, T2:  0x{:016x}, T3:  0x{:016x}, T4:  0x{:016x}",
+            uf.gprs.reg(T1),
+            uf.gprs.reg(T2),
+            uf.gprs.reg(T3),
+            uf.gprs.reg(T4)
+        );
+        println!(
+            "T5:  0x{:016x}, T6:  0x{:016x}, SP:  0x{:016x}",
+            uf.gprs.reg(T5),
+            uf.gprs.reg(T6),
+            uf.gprs.reg(SP)
+        );
+    }
 }
 
 extern "C" {
@@ -158,7 +225,7 @@ struct ResetArea {
     data: &'static [u8],
 }
 
-/// The UMODE task loaded.
+/// The loaded UMODE task.
 static UMODE_TASK: Once<Umode> = Once::new();
 
 /// Salus UMODE task.
@@ -176,9 +243,8 @@ impl Umode {
         UMODE_TASK.call_once(|| umode);
     }
 
-    /// Create a new umode runner. This must be done once on every
-    /// physical CPU.This can be called after `Umode::init()` has been
-    /// called.
+    /// Create a new umode runner. This must be done once on every physical CPU. This can be called
+    /// only after `Umode::init()` has been called.
     pub fn new_per_cpu_umode() -> PerCpuUmode<'static> {
         PerCpuUmode {
             // Unwrap okay. This will be called after init().
@@ -218,11 +284,42 @@ impl<'um> Drop for ActiveUmode<'um> {
 }
 
 impl<'um> ActiveUmode<'um> {
-    fn handle_ecall(&self) -> ControlFlow<Error> {
-        // Ecall always exits for now.
-        println!("ecall");
-        ControlFlow::Break(Error::Panic)
-        // NB: increment sepc if continue
+    fn set_ecall_result(&mut self, ret: Result<u64, HypCallError>) {
+        let args = self.arch.task_regs.gprs.a_regs_mut();
+        HypReturn::from(ret).to_regs(args);
+        // Increase SEPC to skip ecall on entry.
+        self.arch.task_regs.sepc += 4;
+    }
+
+    fn handle_base_ext(&mut self, base_ext: BaseFunc) -> ControlFlow<Result<(), Error>> {
+        match base_ext {
+            BaseFunc::Panic => {
+                println!("UMODE panic!");
+                self.arch.print();
+                ControlFlow::Break(Err(Error::Panic))
+            },
+            BaseFunc::PutChar(byte) => {
+                if let Some(c) = char::from_u32(byte as u32) {
+                    print!("{}", c);
+                }
+                self.set_ecall_result(Ok(0));
+                ControlFlow::Continue(())
+            },
+        }
+    }
+
+    fn handle_ecall(&mut self) -> ControlFlow<Result<(), Error>> {
+        match HypCall::from_regs(self.arch.task_regs.gprs.a_regs()) {
+            Ok(hypcall) => {
+                match hypcall {
+                    HypCall::Base(base_func) => self.handle_base_ext(base_func)
+                }
+            },
+            Err(err) => {
+                self.set_ecall_result(Err(err));
+                ControlFlow::Continue(())
+            }
+        }
     }
 
     /// Run `umode` until completion or error.
@@ -232,7 +329,7 @@ impl<'um> ActiveUmode<'um> {
             match Trap::from_scause(self.arch.trap_csrs.scause).unwrap() {
                 Trap::Exception(UserEnvCall) => match self.handle_ecall() {
                     ControlFlow::Continue(_) => continue,
-                    ControlFlow::Break(err) => break Err(err),
+                    ControlFlow::Break(res) => break res,
                 },
                 _ => {
                     break Err(Error::UnexpectedTrap);
@@ -247,7 +344,6 @@ impl<'um> ActiveUmode<'um> {
             // Safe to run umode code as it only touches memory assigned to it through umode mappings.
             _run_umode(&mut *self.arch as *mut UmodeCpuArchState);
         }
-
         // Save off the trap information.
         self.arch.trap_csrs.scause = CSR.scause.get();
         self.arch.trap_csrs.stval = CSR.stval.get();
