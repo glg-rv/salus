@@ -29,7 +29,7 @@ impl HypCall {
         match args[7] {
             HCEXT_BASE => Ok(Base(BaseFunc::from_regs(&args[0..6])?)),
             //            HCEXT_DEMO => Ok(Demo(DemoFunc::from_regs(&mut args[0..6])?)),
-            _ => Err(HypCallError::UnknownExtension)
+            _ => Err(HypCallError::UnknownExtension),
         }
     }
 
