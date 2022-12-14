@@ -506,7 +506,11 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
 
     {
         println!("Running UMODE GIANLUCA");
-        PerCpu::this_cpu().umode().activate().run();
+        PerCpu::this_cpu()
+            .umode()
+            .activate()
+            .expect("Could not start U-mode")
+            .run();
     }
 
     // Now load the host VM.
@@ -555,7 +559,11 @@ extern "C" fn secondary_init(_hart_id: u64) {
 
     {
         println!("Running UMODE GIANLUCA");
-        PerCpu::this_cpu().umode().activate().run();
+        PerCpu::this_cpu()
+            .umode()
+            .activate()
+            .expect("Could not start U-mode")
+            .run();
     }
 
     HOST_VM.wait().run(me.cpu_id().raw() as u64);
