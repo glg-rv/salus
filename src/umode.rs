@@ -6,9 +6,13 @@ use crate::umode_mem::UmodeMemoryRange;
 
 use arrayvec::ArrayVec;
 use core::cell::{RefCell, RefMut};
+use core::arch::global_asm;
+use core::mem::size_of;
+use memoffset::offset_of;
 use riscv_elf::{ElfMap, ElfSegmentPerms};
 use riscv_pages::PageSize;
-use riscv_regs::GeneralPurposeRegisters;
+use riscv_regs::Exception::UserEnvCall;
+use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use s_mode_utils::print::*;
 
 /// Host GPR and which must be saved/restored when entering/exiting U-mode.
@@ -46,11 +50,171 @@ struct UmodeCpuArchState {
     trap_csrs: TrapRegs,
 }
 
+impl UmodeCpuArchState {
+    fn print(&self) {
+        let uregs = &self.umode_regs;
+        println!(
+            "SEPC: 0x{:016x}, SCAUSE: 0x{:016x}, STVAL: 0x{:016x}",
+            uregs.sepc, self.trap_csrs.scause, self.trap_csrs.stval,
+        );
+        use GprIndex::*;
+        println!(
+            "RA:  0x{:016x}, GP:  0x{:016x}, TP:  0x{:016x}, S0:  0x{:016x}",
+            uregs.gprs.reg(RA),
+            uregs.gprs.reg(GP),
+            uregs.gprs.reg(TP),
+            uregs.gprs.reg(S0)
+        );
+        println!(
+            "S1:  0x{:016x}, A0:  0x{:016x}, A1:  0x{:016x}, A2:  0x{:016x}",
+            uregs.gprs.reg(S1),
+            uregs.gprs.reg(A0),
+            uregs.gprs.reg(A1),
+            uregs.gprs.reg(A2)
+        );
+        println!(
+            "A3:  0x{:016x}, A4:  0x{:016x}, A5:  0x{:016x}, A6:  0x{:016x}",
+            uregs.gprs.reg(A3),
+            uregs.gprs.reg(A4),
+            uregs.gprs.reg(A5),
+            uregs.gprs.reg(A6)
+        );
+        println!(
+            "A7:  0x{:016x}, S2:  0x{:016x}, S3:  0x{:016x}, S4:  0x{:016x}",
+            uregs.gprs.reg(A7),
+            uregs.gprs.reg(S2),
+            uregs.gprs.reg(S3),
+            uregs.gprs.reg(S4)
+        );
+        println!(
+            "S5:  0x{:016x}, S6:  0x{:016x}, S7:  0x{:016x}, S8:  0x{:016x}",
+            uregs.gprs.reg(S5),
+            uregs.gprs.reg(S6),
+            uregs.gprs.reg(S7),
+            uregs.gprs.reg(S8)
+        );
+        println!(
+            "S9:  0x{:016x}, S10: 0x{:016x}, S11: 0x{:016x}, T0:  0x{:016x}",
+            uregs.gprs.reg(S9),
+            uregs.gprs.reg(S10),
+            uregs.gprs.reg(S11),
+            uregs.gprs.reg(T0)
+        );
+        println!(
+            "T1:  0x{:016x}, T2:  0x{:016x}, T3:  0x{:016x}, T4:  0x{:016x}",
+            uregs.gprs.reg(T1),
+            uregs.gprs.reg(T2),
+            uregs.gprs.reg(T3),
+            uregs.gprs.reg(T4)
+        );
+        println!(
+            "T5:  0x{:016x}, T6:  0x{:016x}, SP:  0x{:016x}",
+            uregs.gprs.reg(T5),
+            uregs.gprs.reg(T6),
+            uregs.gprs.reg(SP)
+        );
+    }
+}
+
+extern "C" {
+    // umode context switch. Defined in umode.S
+    fn _run_umode(g: *mut UmodeCpuArchState);
+}
+
+#[allow(dead_code)]
+const fn host_gpr_offset(index: GprIndex) -> usize {
+    offset_of!(UmodeCpuArchState, host_regs)
+        + offset_of!(HostCpuRegs, gprs)
+        + (index as usize) * size_of::<u64>()
+}
+
+#[allow(dead_code)]
+const fn umode_gpr_offset(index: GprIndex) -> usize {
+    offset_of!(UmodeCpuArchState, umode_regs)
+        + offset_of!(UmodeCpuRegs, gprs)
+        + (index as usize) * size_of::<u64>()
+}
+
+macro_rules! host_csr_offset {
+    ($reg:tt) => {
+        offset_of!(UmodeCpuArchState, host_regs) + offset_of!(HostCpuRegs, $reg)
+    };
+}
+
+macro_rules! umode_csr_offset {
+    ($reg:tt) => {
+        offset_of!(UmodeCpuArchState, umode_regs) + offset_of!(UmodeCpuRegs, $reg)
+    };
+}
+
+global_asm!(
+    include_str!("umode.S"),
+    host_ra = const host_gpr_offset(GprIndex::RA),
+    host_gp = const host_gpr_offset(GprIndex::GP),
+    host_tp = const host_gpr_offset(GprIndex::TP),
+    host_s0 = const host_gpr_offset(GprIndex::S0),
+    host_s1 = const host_gpr_offset(GprIndex::S1),
+    host_a1 = const host_gpr_offset(GprIndex::A1),
+    host_a2 = const host_gpr_offset(GprIndex::A2),
+    host_a3 = const host_gpr_offset(GprIndex::A3),
+    host_a4 = const host_gpr_offset(GprIndex::A4),
+    host_a5 = const host_gpr_offset(GprIndex::A5),
+    host_a6 = const host_gpr_offset(GprIndex::A6),
+    host_a7 = const host_gpr_offset(GprIndex::A7),
+    host_s2 = const host_gpr_offset(GprIndex::S2),
+    host_s3 = const host_gpr_offset(GprIndex::S3),
+    host_s4 = const host_gpr_offset(GprIndex::S4),
+    host_s5 = const host_gpr_offset(GprIndex::S5),
+    host_s6 = const host_gpr_offset(GprIndex::S6),
+    host_s7 = const host_gpr_offset(GprIndex::S7),
+    host_s8 = const host_gpr_offset(GprIndex::S8),
+    host_s9 = const host_gpr_offset(GprIndex::S9),
+    host_s10 = const host_gpr_offset(GprIndex::S10),
+    host_s11 = const host_gpr_offset(GprIndex::S11),
+    host_sp = const host_gpr_offset(GprIndex::SP),
+    host_stvec = const host_csr_offset!(stvec),
+    host_sscratch = const host_csr_offset!(sscratch),
+    umode_ra = const umode_gpr_offset(GprIndex::RA),
+    umode_gp = const umode_gpr_offset(GprIndex::GP),
+    umode_tp = const umode_gpr_offset(GprIndex::TP),
+    umode_s0 = const umode_gpr_offset(GprIndex::S0),
+    umode_s1 = const umode_gpr_offset(GprIndex::S1),
+    umode_a0 = const umode_gpr_offset(GprIndex::A0),
+    umode_a1 = const umode_gpr_offset(GprIndex::A1),
+    umode_a2 = const umode_gpr_offset(GprIndex::A2),
+    umode_a3 = const umode_gpr_offset(GprIndex::A3),
+    umode_a4 = const umode_gpr_offset(GprIndex::A4),
+    umode_a5 = const umode_gpr_offset(GprIndex::A5),
+    umode_a6 = const umode_gpr_offset(GprIndex::A6),
+    umode_a7 = const umode_gpr_offset(GprIndex::A7),
+    umode_s2 = const umode_gpr_offset(GprIndex::S2),
+    umode_s3 = const umode_gpr_offset(GprIndex::S3),
+    umode_s4 = const umode_gpr_offset(GprIndex::S4),
+    umode_s5 = const umode_gpr_offset(GprIndex::S5),
+    umode_s6 = const umode_gpr_offset(GprIndex::S6),
+    umode_s7 = const umode_gpr_offset(GprIndex::S7),
+    umode_s8 = const umode_gpr_offset(GprIndex::S8),
+    umode_s9 = const umode_gpr_offset(GprIndex::S9),
+    umode_s10 = const umode_gpr_offset(GprIndex::S10),
+    umode_s11 = const umode_gpr_offset(GprIndex::S11),
+    umode_t0 = const umode_gpr_offset(GprIndex::T0),
+    umode_t1 = const umode_gpr_offset(GprIndex::T1),
+    umode_t2 = const umode_gpr_offset(GprIndex::T2),
+    umode_t3 = const umode_gpr_offset(GprIndex::T3),
+    umode_t4 = const umode_gpr_offset(GprIndex::T4),
+    umode_t5 = const umode_gpr_offset(GprIndex::T5),
+    umode_t6 = const umode_gpr_offset(GprIndex::T6),
+    umode_sp = const umode_gpr_offset(GprIndex::SP),
+    umode_sepc = const umode_csr_offset!(sepc),
+);
+
 /// Errors returned by U-mode runs.
 #[derive(Debug)]
 pub enum Error {
     /// ELF segment out of range,
     InvalidElf,
+    /// Received an unexpected trap while running Umode.
+    UnexpectedTrap,
     /// MAX_RESET_ARGS is too smal for ELF file.
     ResetVectorFull,
 }
@@ -176,6 +340,29 @@ impl<'act, 'umode> UmodeActiveTask<'act, 'umode> {
 
     /// Run `umode` until completion or error.
     pub fn run(&mut self) -> Result<(), Error> {
-        Ok(())
+        self.run_to_exit();
+        match Trap::from_scause(self.arch.trap_csrs.scause).unwrap() {
+            Trap::Exception(UserEnvCall) => {
+                // Exit on ecall.
+                println!("U-mode ecall!");
+                self.arch.print();
+                Ok(())
+            }
+            _ => {
+                self.arch.print();
+                Err(Error::UnexpectedTrap)
+            }
+        }
+    }
+
+    /// Run until it exits
+    fn run_to_exit(&mut self) {
+        unsafe {
+            // Safe to run umode code as it only touches memory assigned to it through umode mappings.
+            _run_umode(&mut *self.arch as *mut UmodeCpuArchState);
+        }
+        // Save off the trap information.
+        self.arch.trap_csrs.scause = CSR.scause.get();
+        self.arch.trap_csrs.stval = CSR.stval.get();
     }
 }
