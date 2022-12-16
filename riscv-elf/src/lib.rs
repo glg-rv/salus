@@ -311,18 +311,20 @@ impl<'elf> ElfMap<'elf> {
             if ph.p_type != PT_LOAD {
                 continue;
             }
-            // Create a segment from the PH.
-            let data_size = ph.p_filesz as usize;
-            let data = if data_size > 0 {
-                Some(slice_get_range(bytes, ph.p_offset, data_size).ok_or(Error::BadOffset)?)
-            } else {
-                None
-            };
-            let vaddr = ph.p_vaddr;
-            let size = ph.p_memsz as usize;
-            let flags = ph.p_flags;
-            let segment = ElfSegment::new(data, vaddr, size, flags)?;
-            segments.push(segment);
+            if ph.p_memsz != 0 {
+                // Create a segment from the PH.
+                let data_size = ph.p_filesz as usize;
+                let data = if data_size > 0 {
+                    Some(slice_get_range(bytes, ph.p_offset, data_size).ok_or(Error::BadOffset)?)
+                } else {
+                    None
+                };
+                let vaddr = ph.p_vaddr;
+                let size = ph.p_memsz as usize;
+                let flags = ph.p_flags;
+                let segment = ElfSegment::new(data, vaddr, size, flags)?;
+                segments.push(segment);
+            }
         }
         Ok(Self {
             entry: header.e_entry,
