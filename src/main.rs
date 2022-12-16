@@ -503,6 +503,16 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
         .expect("Could not activate U-mode")
         .run()
         .unwrap();
+    UmodeTask::get()
+        .activate()
+        .expect("Could not activate U-mode")
+        .run()
+        .unwrap();
+    UmodeTask::get()
+        .activate()
+        .expect("Could not activate U-mode")
+        .run()
+        .unwrap();
 
     // Now load the host VM.
     let host = HostVmLoader::new(
