@@ -16,8 +16,13 @@ _start:
 .option pop
     la sp, _stack_end
 
-    call task_main
+    la t1, task_main
+    la ra, 1f
+    jr t1
 
+    j 1f
+1:
+    mv a0, zero
     // ecall to exit
     ecall
 
