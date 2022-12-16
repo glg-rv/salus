@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use riscv_regs::{sstatus, ReadWriteable, CSR};
+use s_mode_utils::print::*;
 
 /// U-mode mappings start here.
 pub const UMODE_VA_START: u64 = 0xffffffff00000000;
@@ -75,6 +76,7 @@ impl UmodeMemoryRange {
     pub fn copy_to_umode(&self, data: &[u8]) {
         let len = core::cmp::min(data.len(), self.len);
         let dest = self.addr as *mut u8;
+        println!("Copying from data to {:#?} for {:?} bytes", dest, len);
         // Caller guarantees mapping is present. Write to user mapping setting SUM in SSTATUS.
         CSR.sstatus.modify(sstatus::sum.val(1));
         // Safe because `len` is not bigger than the length of this U-mode range starting at `dest`.
@@ -88,6 +90,7 @@ impl UmodeMemoryRange {
     /// Caller must ensure that the U-mode memory range is mapped.
     pub fn clear(&self) {
         let dest = self.addr as *mut u8;
+        println!("Clearing from data to {:#?} for {:?} bytes", dest, self.len);
         // Caller guarantees mapping is present. Write to user mapping setting SUM in SSTATUS.
         CSR.sstatus.modify(sstatus::sum.val(1));
         // Safe because the range starting at `dest` is exactly `self.len` long.

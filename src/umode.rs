@@ -8,12 +8,14 @@ use arrayvec::ArrayVec;
 use core::cell::{RefCell, RefMut};
 use core::arch::global_asm;
 use core::mem::size_of;
+use core::ops::ControlFlow;
 use memoffset::offset_of;
 use riscv_elf::{ElfMap, ElfSegmentPerms};
 use riscv_pages::PageSize;
 use riscv_regs::Exception::UserEnvCall;
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use s_mode_utils::print::*;
+use umode_api::hypcall::*;
 
 /// Host GPR and which must be saved/restored when entering/exiting U-mode.
 #[derive(Default)]
@@ -213,10 +215,12 @@ global_asm!(
 pub enum Error {
     /// ELF segment out of range,
     InvalidElf,
-    /// Received an unexpected trap while running Umode.
-    UnexpectedTrap,
     /// MAX_RESET_ARGS is too smal for ELF file.
     ResetVectorFull,
+    /// Received an unexpected trap while running Umode.
+    UnexpectedTrap,
+    /// Umode called panic.
+    Panic,
 }
 
 #[derive(Debug)]
@@ -242,6 +246,7 @@ impl UmodeResetArea {
             // Unwrap okay. Offset is valid because `copied` is smaller than the range length.
             range.offset(copied).unwrap().clear();
         }
+        println!("done");
     }
 }
 
@@ -338,19 +343,55 @@ impl<'act, 'umode> UmodeActiveTask<'act, 'umode> {
         self.arch.umode_regs.sepc = self.umode.entry;
     }
 
+    fn set_ecall_result(&mut self, ret: Result<u64, HypCallError>) {
+        let args = self.arch.umode_regs.gprs.a_regs_mut();
+        HypReturn::from(ret).to_regs(args);
+        // Increase SEPC to skip ecall on entry.
+        self.arch.umode_regs.sepc += 4;
+    }
+
+    fn handle_base_ext(&mut self, base_ext: BaseFunc) -> ControlFlow<Result<(), Error>> {
+        match base_ext {
+            BaseFunc::Panic => {
+                println!("U-mode panic!");
+                self.arch.print();
+                ControlFlow::Break(Ok(()))
+            }
+            BaseFunc::PutChar(byte) => {
+                if let Some(c) = char::from_u32(byte as u32) {
+                    print!("{}", c);
+                }
+                self.set_ecall_result(Ok(0));
+                ControlFlow::Continue(())
+            }
+        }
+    }
+
+    fn handle_ecall(&mut self) -> ControlFlow<Result<(), Error>> {
+        match HypCall::from_regs(self.arch.umode_regs.gprs.a_regs()) {
+            Ok(hypcall) => match hypcall {
+                HypCall::Base(base_func) => self.handle_base_ext(base_func),
+            },
+            Err(err) => {
+                self.set_ecall_result(Err(err));
+                ControlFlow::Continue(())
+            }
+        }
+    }
+
     /// Run `umode` until completion or error.
     pub fn run(&mut self) -> Result<(), Error> {
-        self.run_to_exit();
-        match Trap::from_scause(self.arch.trap_csrs.scause).unwrap() {
-            Trap::Exception(UserEnvCall) => {
-                // Exit on ecall.
-                println!("U-mode ecall!");
-                self.arch.print();
-                Ok(())
-            }
-            _ => {
-                self.arch.print();
-                Err(Error::UnexpectedTrap)
+        loop {
+            self.run_to_exit();
+            match Trap::from_scause(self.arch.trap_csrs.scause).unwrap() {
+                Trap::Exception(UserEnvCall) => match self.handle_ecall() {
+                    ControlFlow::Continue(_) => continue,
+                    ControlFlow::Break(res) => break res,
+                },
+                _ => {
+                    self.arch.print();
+                    break Err(Error::UnexpectedTrap)
+                }
             }
         }
     }
