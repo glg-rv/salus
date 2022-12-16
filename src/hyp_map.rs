@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::umode_mem::is_valid_umode_range;
+
 use arrayvec::ArrayVec;
 use page_tracking::{HwMemMap, HwMemRegion, HwMemRegionType, HwReservedMemType, HypPageAlloc};
 use riscv_elf::{ElfMap, ElfSegment, ElfSegmentPerms};
@@ -20,6 +22,14 @@ const MAX_SHARED_REGIONS: usize = 32;
 type PerPagetableRegionsVec = ArrayVec<PerPagetableRegion, MAX_PER_PAGETABLE_REGIONS>;
 // Shared regions vector.
 type SharedRegionsVec = ArrayVec<SharedRegion, MAX_SHARED_REGIONS>;
+
+#[derive(Debug)]
+pub enum Error {
+    /// U-mode ELF segment is not page aligned.
+    ElfUnalignedSegment,
+    /// U-mode ELF segment is not in U-mode VA area.
+    ElfInvalidAddress,
+}
 
 /// Represents a virtual address region of the hypervisor that will be the same in all pagetables.
 pub struct SharedRegion {
@@ -115,7 +125,7 @@ struct PerPagetableRegion {
 
 impl PerPagetableRegion {
     // Creates a per-pagetable region from an U-mode ELF segment.
-    fn from_umode_elf_segment(seg: &ElfSegment<'static>) -> Option<Self> {
+    fn from_umode_elf_segment(seg: &ElfSegment<'static>) -> Result<Self, Error> {
         // Sanity check for segment alignments.
         //
         // In general ELF might have segments overlapping in the same page, possibly with different
@@ -125,9 +135,13 @@ impl PerPagetableRegion {
         //
         // The following check enforces that the segment starts at a 4k page aligned address. Unless
         // the linking is completely corrupt, this also means that it starts at a different page.
-        // Assert is okay. This is a build error.
-        assert!(PageSize::Size4k.is_aligned(seg.vaddr()));
-
+        if !PageSize::Size4k.is_aligned(seg.vaddr()) {
+            return Err(Error::ElfUnalignedSegment);
+        }
+        // Sanity check for VA area of the segment.
+        if !is_valid_umode_range(seg.vaddr(), seg.size()) {
+            return Err(Error::ElfInvalidAddress);
+        }
         let pte_perms = match seg.perms() {
             ElfSegmentPerms::ReadOnly => PteLeafPerms::UR,
             ElfSegmentPerms::ReadWrite => PteLeafPerms::URW,
@@ -136,7 +150,7 @@ impl PerPagetableRegion {
         // Unwrap okay. `seg.vaddr()` has been checked to be 4k aligned.
         let vaddr = PageAddr::new(RawAddr::supervisor_virt(seg.vaddr())).unwrap();
         let pte_fields = PteFieldBits::leaf_with_perms(pte_perms);
-        Some(Self {
+        Ok(Self {
             vaddr,
             size: seg.size(),
             pte_fields,
@@ -202,7 +216,7 @@ pub struct HypMap {
 
 impl HypMap {
     /// Create a new hypervisor map from a hardware memory mem map and a umode ELF.
-    pub fn new(mem_map: HwMemMap, umode_elf: ElfMap<'static>) -> HypMap {
+    pub fn new(mem_map: HwMemMap, umode_elf: ElfMap<'static>) -> Result<HypMap, Error> {
         // All shared mappings come from the HW Memory Map.
         let shared_regions = mem_map
             .regions()
@@ -211,12 +225,13 @@ impl HypMap {
         // All per-pagetable mappings come from the U-mode ELF.
         let per_pagetable_regions = umode_elf
             .segments()
-            .filter_map(PerPagetableRegion::from_umode_elf_segment)
-            .collect();
-        HypMap {
+            .map(PerPagetableRegion::from_umode_elf_segment)
+            .collect::<Result<_, _>>()?;
+
+        Ok(HypMap {
             shared_regions,
             per_pagetable_regions,
-        }
+        })
     }
 
     /// Create a new page table based on this memory map.
@@ -230,7 +245,6 @@ impl HypMap {
             .unwrap();
         let sv48: FirstStagePageTable<Sv48> =
             FirstStagePageTable::new(root_page).expect("creating first sv48");
-
         // Map shared regions
         for r in &self.shared_regions {
             r.map(&sv48, &mut || {

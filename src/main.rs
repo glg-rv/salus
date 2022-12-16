@@ -31,6 +31,7 @@ mod host_vm;
 mod hyp_map;
 mod smp;
 mod trap;
+mod umode_mem;
 mod vm;
 mod vm_cpu;
 mod vm_id;
@@ -475,7 +476,7 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     }
 
     // Create the hypervisor mapping starting from the hardware memory map.
-    let hyp_map = HypMap::new(mem_map, umode_elf);
+    let hyp_map = HypMap::new(mem_map, umode_elf).expect("Cannot create Hypervisor map.");
 
     // The hypervisor mapping is complete. Can setup paging structures now.
     setup_hyp_paging(hyp_map, &mut hyp_mem);
