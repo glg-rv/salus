@@ -160,7 +160,7 @@ pub enum Error {
     UnsupportedProgramHeaderFlags(u32),
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 /// Mapping Permissions of an ELF Segment
 pub enum ElfSegmentPerms {
     /// Read-Only

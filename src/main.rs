@@ -31,6 +31,7 @@ mod host_vm;
 mod hyp_map;
 mod smp;
 mod trap;
+mod umode;
 mod umode_mem;
 mod vm;
 mod vm_cpu;
@@ -61,6 +62,7 @@ use s_mode_utils::print::*;
 use s_mode_utils::sbi_console::SbiConsoleV01;
 use smp::PerCpu;
 use spin::Once;
+use umode::Umode;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -114,6 +116,9 @@ fn poweroff() -> ! {
 
 /// The host VM that all CPUs enter at boot.
 static HOST_VM: Once<HostVm<Sv48x4>> = Once::new();
+
+/// The single U-mode tasks.
+pub static UMODE_TASK: Once<Umode> = Once::new();
 
 /// Builds the hardware memory map from the device-tree. The kernel & initramfs image regions are
 /// aligned to `T::TOP_LEVEL_ALIGN` so that they can be mapped directly into the host VM's guest
@@ -476,7 +481,7 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     }
 
     // Create the hypervisor mapping starting from the hardware memory map.
-    let hyp_map = HypMap::new(mem_map, umode_elf).expect("Cannot create Hypervisor map.");
+    let hyp_map = HypMap::new(mem_map, &umode_elf).expect("Cannot create Hypervisor map.");
 
     // The hypervisor mapping is complete. Can setup paging structures now.
     setup_hyp_paging(hyp_map, &mut hyp_mem);
@@ -495,6 +500,23 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
             println!("Failed to probe IOMMU: {:?}", e);
         }
     };
+
+    // Initialize Umode.
+    let umode = Umode::init(umode_elf).expect("Cannot initialize U-mode");
+    UMODE_TASK.call_once(|| umode);
+
+    // Install umode in the current cpu.
+    // Unwrap okay: UMODE has been set.
+    PerCpu::this_cpu().set_umode(UMODE_TASK.get().unwrap().cpu_task());
+
+    {
+        PerCpu::this_cpu()
+            .umode()
+            .activate()
+            .expect("Could not start U-mode")
+            .run()
+            .unwrap();
+    }
 
     // Now load the host VM.
     let host = HostVmLoader::new(
@@ -534,8 +556,20 @@ extern "C" fn secondary_init(_hart_id: u64) {
     }
     Imsic::setup_this_cpu();
 
+    // Unwrap okay: UMODE_TASK has been set.
+    PerCpu::this_cpu().set_umode(UMODE_TASK.get().unwrap().cpu_task());
+
     let me = PerCpu::this_cpu();
     me.set_online();
+
+    {
+        PerCpu::this_cpu()
+            .umode()
+            .activate()
+            .expect("Could not start U-mode")
+            .run()
+            .unwrap();
+    }
 
     HOST_VM.wait().run(me.cpu_id().raw() as u64);
     poweroff();
