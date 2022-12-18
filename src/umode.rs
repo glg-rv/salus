@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::hyp_map::HypMap;
 use crate::smp::PerCpu;
 
 use core::arch::global_asm;
@@ -50,6 +51,16 @@ struct UmodeCpuArchState {
     hyp_regs: HostCpuRegs,
     umode_regs: UmodeCpuRegs,
     trap_csrs: TrapRegs,
+}
+
+impl UmodeCpuArchState {
+    fn init_state() -> Self {
+        let mut init = Self::default();
+        // sstatus set to 0 (by default) is actually okay.
+        // Unwrap okay: this is called after `Self::init()`.
+        init.umode_regs.sepc = *UMODE_ENTRY.get().unwrap();
+        init
+    }
 }
 
 impl fmt::Display for UmodeCpuArchState {
@@ -252,12 +263,8 @@ impl UmodeTask {
 
     /// Initialize a new U-mode task. Must be called once on each physical CPU.
     pub fn setup_this_cpu() {
-        let mut arch = UmodeCpuArchState::default();
-        // sstatus set to 0 (by default) is actually okay.
-        // Unwrap okay: this is called after `Self::init()`.
-        arch.umode_regs.sepc = *UMODE_ENTRY.get().unwrap();
         let task = UmodeTask {
-            arch: RefCell::new(arch),
+            arch: RefCell::new(UmodeCpuArchState::init_state()),
         };
         // Install umode in the current cpu.
         PerCpu::this_cpu().set_umode_task(task);
@@ -272,6 +279,14 @@ impl UmodeTask {
     pub fn activate(&self) -> Result<ActiveUmodeTask, Error> {
         let arch = self.arch.try_borrow_mut().map_err(|_| Error::TaskBusy)?;
         Ok(ActiveUmodeTask { arch })
+    }
+
+    /// Reset to initial state this CPU's non-active U-mode task.
+    pub fn reset(&self) -> Result<(), Error> {
+        // Restore memory at initial state for this CPU.
+        HypMap::get().restore_umode_private_regions();
+        *self.arch.try_borrow_mut().map_err(|_| Error::TaskBusy)? = UmodeCpuArchState::init_state();
+        Ok(())
     }
 }
 
