@@ -9,7 +9,7 @@ use riscv_page_tables::{FirstStagePageTable, PteFieldBits, PteLeafPerms, Sv48};
 use riscv_pages::{
     InternalClean, Page, PageAddr, PageSize, RawAddr, SupervisorPhys, SupervisorVirt,
 };
-use riscv_regs::{satp, LocalRegisterCopy, SatpHelpers};
+use riscv_regs::{satp, sstatus, LocalRegisterCopy, ReadWriteable, SatpHelpers, CSR};
 use spin::Once;
 
 // Maximum number of regions unique to every pagetable (private).
@@ -283,5 +283,50 @@ impl HypMap {
             r.map(&sv48, hyp_mem);
         }
         HypPageTable { inner: sv48 }
+    }
+
+    /// Set memory of umode binary in current pagetable to its original state.
+    pub fn restore_umode_private_regions(&self) {
+        // Iterate over all U-mode private writable regions.
+        for r in self
+            .private_regions
+            .iter()
+            .filter(|r| r.pte_fields == PteFieldBits::leaf_with_perms(PteLeafPerms::URW))
+        {
+            let mut copied = 0;
+            // We have to reset the full pages mapped for this segment.
+            let mapped_size = PageSize::Size4k.round_up(r.size as u64) as usize;
+            // Copy data at the beginning if it's present.
+            if let Some(data) = r.data {
+                // In case data is bigger than region size, write up to region end only.
+                let len = core::cmp::min(r.size, data.len());
+                let data = &data[0..len];
+                // Copy original data to umode area.
+                // Write to user mapping setting SUM in SSTATUS.
+                CSR.sstatus.modify(sstatus::sum.val(1));
+                // Safety:
+                // - this write is in a umode regions guaranteed to be mapped by HypMap in every page table.
+                // - the region starts at r.vaddr and is r.size byte long. `len` is <= `r.size`.
+                unsafe {
+                    core::ptr::copy(data.as_ptr(), r.vaddr.bits() as *mut u8, len);
+                }
+                // Restore SUM.
+                CSR.sstatus.modify(sstatus::sum.val(0));
+                copied = len;
+            }
+            // Clear data from the end of copy to the end of mapped_area.
+            let len = mapped_size - copied;
+            let dest = r.vaddr.bits() + copied as u64;
+            // Write to user mapping setting SUM in SSTATUS.
+            CSR.sstatus.modify(sstatus::sum.val(1));
+            // Safety:
+            // - this write is in a umode regions guaranteed to be mapped by HypMap in every page table.
+            // - writing to this region start at offset `copied` and goes untill the mapped size of the region.
+            unsafe {
+                core::ptr::write_bytes(dest as *mut u8, 0, len);
+            }
+            // Restore SUM.
+            CSR.sstatus.modify(sstatus::sum.val(0));
+        }
     }
 }
