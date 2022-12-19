@@ -779,6 +779,7 @@ name = "umode"
 version = "0.1.0"
 dependencies = [
  "libuser",
+ "umode_api",
 ]
 
 [[package]]

@@ -51,13 +51,13 @@ pub trait TryIntoRegisters: Sized {
 // UmodeRequest: calls from hypervisor to Umode requesting an operation.
 
 /// Umode operations.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(u64)]
 pub enum UmodeOp {
     /// Do nothing.
     Nop = 1,
-    /// Copy memory from IN to OUT
-    Copy = 2,
+    /// Say hello.
+    Hello = 2,
 }
 
 impl TryFrom<u64> for UmodeOp {
@@ -66,28 +66,55 @@ impl TryFrom<u64> for UmodeOp {
     fn try_from(reg: u64) -> Result<UmodeOp, Error> {
         match reg {
             1 => Ok(UmodeOp::Nop),
-            2 => Ok(UmodeOp::Copy),
+            2 => Ok(UmodeOp::Hello),
             _ => Err(Error::RequestNotSupported),
         }
     }
 }
 
 /// An operation requested by the hypervisor and executed by umode.
+#[derive(Debug)]
 pub struct UmodeRequest {
     op: UmodeOp,
-    in_addr: u64,
+    in_addr: Option<u64>,
     in_len: usize,
-    out_addr: u64,
+    out_addr: Option<u64>,
     out_len: usize,
+}
+
+impl UmodeRequest {
+    pub fn nop() -> UmodeRequest {
+        UmodeRequest {
+            op: UmodeOp::Nop,
+            in_addr: None,
+            in_len: 0,
+            out_addr: None,
+            out_len: 0,
+        }
+    }
+
+    pub fn hello() -> UmodeRequest {
+        UmodeRequest {
+            op: UmodeOp::Hello,
+            in_addr: None,
+            in_len: 0,
+            out_addr: None,
+            out_len: 0,
+        }
+    }
+
+    pub fn op(&self) -> UmodeOp {
+        self.op
+    }
 }
 
 impl TryIntoRegisters for UmodeRequest {
     fn try_from_registers(regs: &[u64]) -> Result<UmodeRequest, Error> {
         let req = UmodeRequest {
             op: UmodeOp::try_from(regs[0])?,
-            in_addr: regs[1],
+            in_addr: if regs[1] == 0 { None } else { Some(regs[1]) },
             in_len: regs[2] as usize,
-            out_addr: regs[3],
+            out_addr: if regs[3] == 0 { None } else { Some(regs[3]) },
             out_len: regs[4] as usize,
         };
         Ok(req)
@@ -95,9 +122,13 @@ impl TryIntoRegisters for UmodeRequest {
 
     fn set_registers(&self, regs: &mut [u64]) {
         regs[0] = self.op as u64;
-        regs[1] = self.in_addr;
+        regs[1] = if let Some(val) = self.in_addr { val } else { 0 };
         regs[2] = self.in_len as u64;
-        regs[3] = self.out_addr;
+        regs[3] = if let Some(val) = self.out_addr {
+            val
+        } else {
+            0
+        };
         regs[4] = self.out_len as u64;
     }
 }
@@ -111,7 +142,7 @@ pub enum HypCall {
     /// Print a character for debug.
     PutChar(u8),
     /// Return result of previous request and wait for next operation.
-    NextOp(Result<(), Error>)
+    NextOp(Result<(), Error>),
 }
 
 const HYPC_PANIC: u64 = 0;

@@ -15,7 +15,7 @@ use riscv_regs::Exception::UserEnvCall;
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use s_mode_utils::print::*;
 use spin::Once;
-use umode_api::{Error as UmodeApiError, HypCall, IntoRegisters, TryIntoRegisters};
+use umode_api::{Error as UmodeApiError, HypCall, IntoRegisters, TryIntoRegisters, UmodeRequest};
 
 /// Host GPR and which must be saved/restored when entering/exiting U-mode.
 #[derive(Default)]
@@ -290,7 +290,7 @@ pub struct UmodeActiveTask<'act> {
 
 impl<'act> UmodeActiveTask<'act> {
     fn set_ecall_result(&mut self, ret: Result<(), UmodeApiError>) {
-        let args = self.arch.umode_regs.gprs.a_regs_mut();
+        let mut args = self.arch.umode_regs.gprs.a_regs_mut();
         ret.set_registers(args);
     }
 
@@ -310,10 +310,8 @@ impl<'act> UmodeActiveTask<'act> {
                     self.set_ecall_result(Ok(()));
                     ControlFlow::Continue(())
                 }
-                HypCall::NextOp(result) => {
-                    ControlFlow::Break(result.map_err(|e| Error::Umode(e)))
-                }
-            }
+                HypCall::NextOp(result) => ControlFlow::Break(result.map_err(|e| Error::Umode(e))),
+            },
             Err(err) => {
                 self.set_ecall_result(Err(err));
                 ControlFlow::Continue(())
@@ -325,8 +323,10 @@ impl<'act> UmodeActiveTask<'act> {
     }
 
     /// Run `umode` until completion or error.
-    pub fn run(&mut self) -> Result<(), Error> {
+    pub fn run(&mut self, req: UmodeRequest) -> Result<(), Error> {
         loop {
+            let regs = self.arch.umode_regs.gprs.a_regs_mut();
+            req.set_registers(regs);
             self.run_to_exit();
             match Trap::from_scause(self.arch.trap_csrs.scause).unwrap() {
                 Trap::Exception(UserEnvCall) => match self.handle_ecall() {

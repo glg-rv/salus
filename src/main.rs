@@ -501,17 +501,17 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     UmodeTask::get()
         .activate()
         .expect("Could not activate U-mode")
-        .run()
+        .run(umode_api::UmodeRequest::hello())
         .unwrap();
     UmodeTask::get()
         .activate()
         .expect("Could not activate U-mode")
-        .run()
+        .run(umode_api::UmodeRequest::nop())
         .unwrap();
     UmodeTask::get()
         .activate()
         .expect("Could not activate U-mode")
-        .run()
+        .run(umode_api::UmodeRequest::hello())
         .unwrap();
 
     // Now load the host VM.
@@ -561,7 +561,7 @@ extern "C" fn secondary_init(_hart_id: u64) {
     UmodeTask::get()
         .activate()
         .expect("Could not activate U-mode")
-        .run()
+        .run(umode_api::UmodeRequest::hello())
         .unwrap();
 
     HOST_VM.wait().run(me.cpu_id().raw() as u64);
