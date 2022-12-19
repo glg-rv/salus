@@ -16,7 +16,7 @@ use riscv_regs::Exception::UserEnvCall;
 use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use s_mode_utils::print::*;
 use spin::Once;
-use umode_api::hypcall::*;
+use umode_api::{Error as UmodeApiError, HypCall, IntoRegisters, TryIntoRegisters};
 
 /// Host GPR and which must be saved/restored when entering/exiting U-mode.
 #[derive(Default)]
@@ -248,6 +248,8 @@ pub enum Error {
     Panic,
     /// Task already active.
     TaskBusy,
+    /// Error in umode.
+    Umode(UmodeApiError),
 }
 
 // Entry for umode task.
@@ -300,40 +302,39 @@ pub struct ActiveUmodeTask<'act> {
 }
 
 impl<'act> ActiveUmodeTask<'act> {
-    fn set_ecall_result(&mut self, ret: Result<u64, HypCallError>) {
+    fn set_ecall_result(&mut self, ret: Result<(), UmodeApiError>) {
         let args = self.arch.umode_regs.gprs.a_regs_mut();
-        HypReturn::from(ret).to_regs(args);
-        // Increase SEPC to skip ecall on entry.
-        self.arch.umode_regs.sepc += 4;
-    }
-
-    fn handle_base_ext(&mut self, base_ext: BaseFunc) -> ControlFlow<Result<(), Error>> {
-        match base_ext {
-            BaseFunc::Panic => {
-                println!("U-mode panic!");
-                self.arch.print();
-                ControlFlow::Break(Ok(()))
-            }
-            BaseFunc::PutChar(byte) => {
-                if let Some(c) = char::from_u32(byte as u32) {
-                    print!("{}", c);
-                }
-                self.set_ecall_result(Ok(0));
-                ControlFlow::Continue(())
-            }
-        }
+        ret.set_registers(args);
     }
 
     fn handle_ecall(&mut self) -> ControlFlow<Result<(), Error>> {
-        match HypCall::from_regs(self.arch.umode_regs.gprs.a_regs()) {
-            Ok(hypcall) => match hypcall {
-                HypCall::Base(base_func) => self.handle_base_ext(base_func),
-            },
+        let regs = self.arch.umode_regs.gprs.a_regs();
+        let cflow = match HypCall::try_from_registers(regs) {
+            Ok(hypercall) => match hypercall {
+                HypCall::Panic => {
+                    println!("U-mode panic!");
+                    println!("{}", self.arch);
+                    ControlFlow::Break(Ok(()))
+                }
+                HypCall::PutChar(byte) => {
+                    if let Some(c) = char::from_u32(byte as u32) {
+                        print!("{}", c);
+                    }
+                    self.set_ecall_result(Ok(()));
+                    ControlFlow::Continue(())
+                }
+                HypCall::NextOp(result) => {
+                    ControlFlow::Break(result.map_err(|e| Error::Umode(e)))
+                }
+            }
             Err(err) => {
                 self.set_ecall_result(Err(err));
                 ControlFlow::Continue(())
             }
-        }
+        };
+        // Increase SEPC to skip ecall on entry.
+        self.arch.umode_regs.sepc += 4;
+        cflow
     }
 
     /// Run `umode` until completion or error.
@@ -346,7 +347,7 @@ impl<'act> ActiveUmodeTask<'act> {
                     ControlFlow::Break(res) => break res,
                 },
                 _ => {
-                    self.arch.print();
+                    println!("{}", self.arch);
                     break Err(Error::UnexpectedTrap);
                 }
             }
