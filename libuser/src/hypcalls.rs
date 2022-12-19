@@ -4,12 +4,7 @@
 
 use core::arch::asm;
 use umode_api::Error as UmodeApiError;
-use umode_api::{HypCall, UmodeRequest, IntoRegisters, TryIntoRegisters};
-
-pub enum Error {
-    /// Can't parse request.
-    InvalidRequest(UmodeApiError),
-}
+use umode_api::{HypCall, IntoRegisters, TryIntoRegisters, UmodeRequest};
 
 /// Send an ecall to the hypervisor.
 ///
@@ -52,7 +47,7 @@ pub fn hyp_panic() {
     unreachable!();
 }
 
-pub fn hyp_nextop(result: Result<(), UmodeApiError>) -> Result<UmodeRequest, Error> {
+pub fn hyp_nextop(result: Result<(), UmodeApiError>) -> Result<UmodeRequest, UmodeApiError> {
     let mut regs = [0u64; 8];
     let hypc = HypCall::NextOp(result);
     hypc.set_registers(&mut regs);
@@ -62,5 +57,5 @@ pub fn hyp_nextop(result: Result<(), UmodeApiError>) -> Result<UmodeRequest, Err
     }
     // In case there's an error return the error. The caller might decide the error immediately and
     // wait for another request, or panic.
-    UmodeRequest::try_from_registers(&regs).map_err(|e| Error::InvalidRequest(e))
+    UmodeRequest::try_from_registers(&regs)
 }

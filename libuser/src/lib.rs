@@ -4,7 +4,7 @@
 
 #![no_std]
 
-mod hypcalls;
+pub mod hypcalls;
 
 use crate::hypcalls::*;
 use core::arch::global_asm;
@@ -50,10 +50,31 @@ macro_rules! println {
     };
 }
 
-// Loop making ecalls as the kernel will kill the task on an ecall (the only syscall supported is
-// `exit`).
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    println!("panic : {:?}", info);
     hyp_panic();
     unreachable!()
+}
+
+use umode_api::{Error as UmodeApiError, TryIntoRegisters, UmodeRequest};
+
+extern "C" {
+    fn task_main(regs: Result<UmodeRequest, UmodeApiError>);
+}
+
+// Start from asm. Registers contain an `UmodeRequest`. Decode and call `task_main`.
+#[no_mangle]
+extern "C" fn _libuser_start(ptr: *mut u64, len: u64) {
+    // Safety: We trust the hypervisor to have called us with the
+    // registers in a0-a7. The assembly code in task_start.S has moved
+    // them to an array and passed address and length of this array.
+    let mut args;
+    unsafe {
+        args = core::slice::from_raw_parts(ptr as *mut u64, len as usize);
+    }
+    // Safety: This function is define in umode/src/main.rs.
+    unsafe {
+        task_main(UmodeRequest::try_from_registers(args));
+    }
 }

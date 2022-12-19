@@ -7,31 +7,41 @@
 
 extern crate libuser;
 
+use libuser::hypcalls::*;
 use libuser::*;
+use umode_api::{Error as UmodeApiError, UmodeOp, UmodeRequest};
 
 static mut a: i32 = 5;
 
 #[no_mangle]
-extern "C" fn task_main(_data: u64) {
-    println!("----------------------------");
-    println!("{}", a);
-    unsafe {
-        a += 1;
-        a += 1;
+extern "C" fn task_main(initial_request: Result<UmodeRequest, UmodeApiError>) {
+    println!("Umode started.");
+    let mut req = initial_request;
+    loop {
+        let res = match req {
+            Ok(req) => match req.op() {
+                UmodeOp::Hello => {
+                    println!("----------------------------");
+                    println!(" ___________________");
+                    println!("< Hello from UMODE! >");
+                    println!(" -------------------");
+                    println!("        \\   ^__^");
+                    println!("         \\  (oo)\\_______");
+                    println!("            (__)\\       )\\/\\");
+                    println!("                ||----w |");
+                    println!("                ||     ||");
+                    println!("----------------------------");
+                    Ok(())
+                }
+                UmodeOp::Nop => {
+                    println!("Nop");
+                    Ok(())
+                }
+            },
+            Err(err) => Err(err),
+        };
+        // Return result and wait for next operation.
+        req = hyp_nextop(res)
     }
-    let ptr = unsafe { &mut a as *mut i32 };
-    unsafe {
-        *ptr = 4;
-    }
-    println!(" ___________________");
-    println!("< Hello from UMODE! >");
-    println!(" -------------------");
-    println!("        \\   ^__^");
-    println!("         \\  (oo)\\_______");
-    println!("            (__)\\       )\\/\\");
-    println!("                ||----w |");
-    println!("                ||     ||");
-    println!("----------------------------");
-    println!("{} {:#?} ", a, ptr);
-    panic!("");
+    panic!("Loop exited.");
 }
