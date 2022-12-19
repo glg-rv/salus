@@ -16,7 +16,7 @@ pub struct UserWriter {}
 impl core::fmt::Write for UserWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for c in s.chars() {
-            hyp_putchar(c);
+            let _ = hyp_putchar(c);
         }
         Ok(())
     }
