@@ -774,6 +774,51 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
 
         Ok(FirstStageMapper::new(self, addr, page_size, num_pages))
     }
+
+    pub fn unmap_range(
+        &self,
+        base: PageAddr<T::MappedAddressSpace>,
+        page_size: PageSize,
+        num_pages: u64,
+    ) -> Result<impl Iterator<Item = SupervisorPageAddr> + '_> {
+        // TODO: Support hyge pages.
+        if page_size.is_huge() {
+            return Err(Error::PageSizeNotSupported(page_size));
+        }
+        base
+            .checked_add_pages(num_pages)
+            .ok_or(Error::AddressOverflow)?;
+        let mut inner = self.inner.lock();
+        for addr in base.iter_from().take(num_pages as usize) {
+            use TableEntryType::*;
+            match inner.walk(addr.into()) {
+                Leaf(pte) => {
+                    if !pte.level().is_leaf() {
+                        return Err(Error::PageSizeNotSupported(pte.level().leaf_page_size()));
+                    }
+                    continue;
+                }
+                Unused(_) => {
+                    continue;
+                }
+                _ => {
+                    return Err(Error::PageNotMapped);
+                }
+            }
+        }
+        Ok(base
+           .iter_from()
+           .take(num_pages as usize)
+           .filter_map(move |addr| {
+               // Skip over unmapped PTEs -- we verified there were no invalidated or locked PTEs
+               // above.
+               let pte = inner.get_mapped_4k_leaf(addr).ok()?;
+               let paddr = pte.page_addr();
+               // First Stage page table do not have an Invalidated State. Clear the LeafPte directly.
+               pte.pte.clear();
+               Some(paddr)
+           }))
+    }
 }
 
 /// A range of mapped address space that has been locked for mapping. The PTEs are unlocked when

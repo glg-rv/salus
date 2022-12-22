@@ -110,12 +110,26 @@ impl SharedRegion {
     }
 }
 
-// U-mode mappings start here.
+// U-mode binary mappings start here.
 const UMODE_VA_START: u64 = 0xffffffff00000000;
-// Size in bytes of the U-mode VA area.
+// Size in bytes of the U-mode binary VA area.
 const UMODE_VA_SIZE: u64 = 128 * 1024 * 1024;
-// U-mode mappings end here.
+// U-mode binary mappings end here.
 const UMODE_VA_END: u64 = UMODE_VA_START + UMODE_VA_SIZE;
+
+/// Start of the input mappings for U-mode.
+pub const UMODE_INPUT_VA_START: u64 = UMODE_VA_END;
+/// Maximum size of the input mappings for U-mode.
+pub const UMODE_INPUT_VA_SIZE: u64 = 8 * 1024;
+/// End of input mappings for U-mode.
+pub const UMODE_INPUT_VA_END: u64 = UMODE_INPUT_VA_START + UMODE_INPUT_VA_END;
+
+/// Start of the output mappings for U-mode.
+pub const UMODE_OUTPUT_VA_START: u64 = UMODE_VA_END;
+/// Maximum size of the output mappings for U-mode.
+pub const UMODE_OUTPUT_VA_SIZE: u64 = 8 * 1024;
+/// End of input mappings for U-mode.
+pub const UMODE_OUTPUT_VA_END: u64 = UMODE_INPUT_VA_START + UMODE_INPUT_VA_END;
 
 // Returns true if `addr` is contained in the U-mode VA area.
 fn is_umode_addr(addr: u64) -> bool {
@@ -210,9 +224,47 @@ impl PrivateRegion {
     }
 }
 
+/// Represents a short-lived, private hypervisor mapper that will unmap itself when dropped.
+pub struct HypTransientMapping<'pt> {
+    sv48: &'pt FirstSTagePageTable<Sv48>,
+    mapper: FirstStageMapper<Sv48>,
+    vaddr: PageAddr<SupervisorVirt>,
+    num_pages: u64,
+}
+
+impl HypTransientMapping {
+    fn new(sv48: &FirstStagePageTable<Sv48>, vaddr: PageAddr<SupervisorVirt>, num_pages: u64, get_pte_page: &mut dyn FnMut() -> Option<Page<InternalClean>>) {
+        let mapper = sv48.map_range(vaddr, PageSize::Size4k, num_pages, get_pte_page)?;
+        Some(HypTransientMapping {
+            mapper,
+            vaddr,
+            num_pages,
+        })
+    }
+
+    /// Maps `vaddr` to `paddr`, The caller must guarantee that paddr points to a page it is safe to
+    /// map in this page table.
+    ///
+    /// # Safety
+    ///
+    /// Don't create aliases.
+    pub unsafe fn map_addr(&self, vaddr: PageAddr<T::MappedAddressSpace>,
+                           paddr: PageAddr<SupervisorPhys>,
+                           pte_perms: PteFieldBits,
+    ) -> 
+}
+
+impl Drop for HypTransientMapping {
+    fn drop(&mut self) {
+        
+    }
+}
+
 /// A page table that contains hypervisor mappings.
 pub struct HypPageTable {
     inner: FirstStagePageTable<Sv48>,
+    /// Pool of page table pages for temporary u-mode mapping.
+    pte_pages: PageList<Page<InternalClean>>,
 }
 
 impl HypPageTable {
@@ -272,4 +324,11 @@ impl HypMap {
         }
         HypPageTable { inner: sv48 }
     }
+}
+
+/// Represents a short-lived mapping in a page table that is
+/// removed when this variable is dropped.
+struct TransientPrivateMapping<'pt> {
+    page_table: &'pt HypPageTable,
+    
 }
