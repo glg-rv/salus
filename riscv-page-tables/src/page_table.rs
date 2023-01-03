@@ -785,8 +785,7 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
         if page_size.is_huge() {
             return Err(Error::PageSizeNotSupported(page_size));
         }
-        base
-            .checked_add_pages(num_pages)
+        base.checked_add_pages(num_pages)
             .ok_or(Error::AddressOverflow)?;
         let mut inner = self.inner.lock();
         for addr in base.iter_from().take(num_pages as usize) {
@@ -807,17 +806,17 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
             }
         }
         Ok(base
-           .iter_from()
-           .take(num_pages as usize)
-           .filter_map(move |addr| {
-               // Skip over unmapped PTEs -- we verified there were no invalidated or locked PTEs
-               // above.
-               let pte = inner.get_mapped_4k_leaf(addr).ok()?;
-               let paddr = pte.page_addr();
-               // First Stage page table do not have an Invalidated State. Clear the LeafPte directly.
-               pte.pte.clear();
-               Some(paddr)
-           }))
+            .iter_from()
+            .take(num_pages as usize)
+            .filter_map(move |addr| {
+                // Skip over unmapped PTEs -- we verified there were no locked PTEs
+                // above.
+                let pte = inner.get_mapped_4k_leaf(addr).ok()?;
+                let paddr = pte.page_addr();
+                // First Stage page table do not have an Invalidated State. Clear the LeafPte directly.
+                pte.pte.clear();
+                Some(paddr)
+            }))
     }
 }
 

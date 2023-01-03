@@ -5,9 +5,9 @@
 use arrayvec::ArrayVec;
 use page_tracking::{HwMemMap, HwMemRegion, HwMemRegionType, HwReservedMemType, HypPageAlloc};
 use riscv_elf::{ElfMap, ElfSegment, ElfSegmentPerms};
-use riscv_page_tables::{FirstStagePageTable, PteFieldBits, PteLeafPerms, Sv48};
+use riscv_page_tables::{FirstStageMapper, FirstStagePageTable, PagingMode, PteFieldBits, PteLeafPerms, Sv48};
 use riscv_pages::{
-    InternalClean, Page, PageAddr, PageSize, RawAddr, SupervisorPhys, SupervisorVirt,
+    InternalClean, Page, PageAddr, PageSize, RawAddr, SeqPageIter, SupervisorPhys, SupervisorVirt,
 };
 use riscv_regs::{satp, LocalRegisterCopy, SatpHelpers};
 
@@ -21,13 +21,19 @@ type PrivateRegionsVec = ArrayVec<PrivateRegion, MAX_PRIVATE_REGIONS>;
 // Shared regions vector.
 type SharedRegionsVec = ArrayVec<SharedRegion, MAX_SHARED_REGIONS>;
 
-/// Errors returned by HypMap.
+/// Errors returned by creating or modifying hypervisor mappings.
 #[derive(Debug)]
 pub enum Error {
     /// U-mode ELF segment is not page aligned.
     ElfUnalignedSegment,
     /// U-mode ELF segment is not in U-mode VA area.
     ElfInvalidAddress,
+    /// An address range causes overflow.
+    AddressOverflow,
+    /// Not enough space on the U-mode dynamic map area.
+    OutOfDynamicMap,
+    /// Could not create a mapper for the U-mode dynamic area.
+    MapperCreationFailed,
 }
 
 // Represents a virtual address region of the hypervisor that will be the same in all pagetables.
@@ -117,19 +123,12 @@ const UMODE_VA_SIZE: u64 = 128 * 1024 * 1024;
 // U-mode binary mappings end here.
 const UMODE_VA_END: u64 = UMODE_VA_START + UMODE_VA_SIZE;
 
-/// Start of the input mappings for U-mode.
-pub const UMODE_INPUT_VA_START: u64 = UMODE_VA_END;
-/// Maximum size of the input mappings for U-mode.
-pub const UMODE_INPUT_VA_SIZE: u64 = 8 * 1024;
-/// End of input mappings for U-mode.
-pub const UMODE_INPUT_VA_END: u64 = UMODE_INPUT_VA_START + UMODE_INPUT_VA_END;
-
-/// Start of the output mappings for U-mode.
-pub const UMODE_OUTPUT_VA_START: u64 = UMODE_VA_END;
-/// Maximum size of the output mappings for U-mode.
-pub const UMODE_OUTPUT_VA_SIZE: u64 = 8 * 1024;
-/// End of input mappings for U-mode.
-pub const UMODE_OUTPUT_VA_END: u64 = UMODE_INPUT_VA_START + UMODE_INPUT_VA_END;
+// Start of the private U-mode dynamic mappings area.
+const UMODE_DYNVA_START: u64 = UMODE_VA_END + 4 * 1024;
+// Maximum size of the private dynamic mappings area.
+const UMODE_DYNVA_SIZE: u64 = 1 * 1024 * 1024;
+// End of the private dynamic mappings area.
+const UMODE_DYNVA_END: u64 = UMODE_DYNVA_START + UMODE_DYNVA_SIZE;
 
 // Returns true if `addr` is contained in the U-mode VA area.
 fn is_umode_addr(addr: u64) -> bool {
@@ -224,55 +223,50 @@ impl PrivateRegion {
     }
 }
 
-/// Represents a short-lived, private hypervisor mapper that will unmap itself when dropped.
-pub struct HypTransientMapping<'pt> {
-    sv48: &'pt FirstSTagePageTable<Sv48>,
-    mapper: FirstStageMapper<Sv48>,
-    vaddr: PageAddr<SupervisorVirt>,
-    num_pages: u64,
-}
-
-impl HypTransientMapping {
-    fn new(sv48: &FirstStagePageTable<Sv48>, vaddr: PageAddr<SupervisorVirt>, num_pages: u64, get_pte_page: &mut dyn FnMut() -> Option<Page<InternalClean>>) {
-        let mapper = sv48.map_range(vaddr, PageSize::Size4k, num_pages, get_pte_page)?;
-        Some(HypTransientMapping {
-            mapper,
-            vaddr,
-            num_pages,
-        })
-    }
-
-    /// Maps `vaddr` to `paddr`, The caller must guarantee that paddr points to a page it is safe to
-    /// map in this page table.
-    ///
-    /// # Safety
-    ///
-    /// Don't create aliases.
-    pub unsafe fn map_addr(&self, vaddr: PageAddr<T::MappedAddressSpace>,
-                           paddr: PageAddr<SupervisorPhys>,
-                           pte_perms: PteFieldBits,
-    ) -> 
-}
-
-impl Drop for HypTransientMapping {
-    fn drop(&mut self) {
-        
-    }
+pub struct UmodeDynamicMapper<'a> {
+    base: PageAddr<SupervisorVirt>,
+    mapper: FirstStageMapper<'a, Sv48>,
 }
 
 /// A page table that contains hypervisor mappings.
 pub struct HypPageTable {
-    inner: FirstStagePageTable<Sv48>,
-    /// Pool of page table pages for temporary u-mode mapping.
-    pte_pages: PageList<Page<InternalClean>>,
+    /// The pagetable containing hypervisor mappings.
+    sv48: FirstStagePageTable<Sv48>,
+    /// A brk-style allocator for the U-mode dynamic VA area.
+    umode_brk: PageAddr<SupervisorVirt>,
+    /// A pte page pool for U-mode dynamic mappings.
+    pte_pages: SeqPageIter<InternalClean>,
 }
 
 impl HypPageTable {
     /// Return the value of the SATP register for this page table.
     pub fn satp(&self) -> u64 {
         let mut satp = LocalRegisterCopy::<u64, satp::Register>::new(0);
-        satp.set_from(&self.inner, 0);
+        satp.set_from(&self.sv48, 0);
         satp.get()
+    }
+
+    // Allocate `num_4k_pages` for U-mode dynamic mappings.
+    fn alloc_umode_dynmap(&mut self, num_4k_pages: u64) -> Result<PageAddr<SupervisorVirt>, Error> {
+        let new_brk = self.umode_brk.checked_add_pages(num_4k_pages).ok_or(Error::AddressOverflow)?;
+        if new_brk.bits() < UMODE_DYNVA_END {
+            let old_brk = self.umode_brk;
+            self.umode_brk = new_brk;
+            Ok(old_brk)
+        } else {
+            Err(Error::OutOfDynamicMap)
+        }
+    }
+
+    pub fn map_umode_dynmap_range(&mut self, num_4k_pages: u64) -> Result<UmodeDynamicMapper, Error> {
+        let base = self.alloc_umode_dynmap(num_4k_pages)?;
+        let mapper = self.sv48.map_range(base, PageSize::Size4k, num_4k_pages, &mut || {
+            self.pte_pages.next()
+        }).map_err(|_| Error::MapperCreationFailed)?;
+        Ok(UmodeDynamicMapper {
+            base,
+            mapper,
+        })
     }
 }
 
@@ -322,13 +316,11 @@ impl HypMap {
         for r in &self.private_regions {
             r.map(&sv48, hyp_mem);
         }
-        HypPageTable { inner: sv48 }
+        // Alloc pte_pages for U-mode mappings.
+        let pte_pages = hyp_mem.take_pages_for_hyp_state(Sv48::max_pte_pages(UMODE_DYNVA_SIZE / PageSize::Size4k as u64) as usize).into_iter();
+        // Unwrap okay: UMODE_DYNVA_START is a constant and must be page aligned.
+        let umode_brk = PageAddr::new(RawAddr::supervisor_virt(UMODE_DYNVA_START)).unwrap();
+        HypPageTable { sv48, umode_brk, pte_pages, }
     }
 }
 
-/// Represents a short-lived mapping in a page table that is
-/// removed when this variable is dropped.
-struct TransientPrivateMapping<'pt> {
-    page_table: &'pt HypPageTable,
-    
-}
