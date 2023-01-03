@@ -34,6 +34,8 @@ pub enum Error {
     OutOfDynamicMap,
     /// Could not create a mapper for the U-mode dynamic area.
     MapperCreationFailed,
+    /// Could not unmap the U-mode dynamic area.
+    UnmapFailed,
 }
 
 // Represents a virtual address region of the hypervisor that will be the same in all pagetables.
@@ -258,6 +260,7 @@ impl HypPageTable {
         }
     }
 
+    /// Returns a mapper that allows to map `num_4k_pages` for use by U-mode.
     pub fn map_umode_dynmap_range(&mut self, num_4k_pages: u64) -> Result<UmodeDynamicMapper, Error> {
         let base = self.alloc_umode_dynmap(num_4k_pages)?;
         let mapper = self.sv48.map_range(base, PageSize::Size4k, num_4k_pages, &mut || {
@@ -267,6 +270,16 @@ impl HypPageTable {
             base,
             mapper,
         })
+    }
+
+    /// Unmap all U-mode dynamic mappings and reset allocation.
+    pub fn reset_umode_dynmap(&mut self) -> Result<(), Error> {
+        // Unwrap okay: UMODE_DYNVA_START is a constant and must be page aligned.
+        let base = PageAddr::new(RawAddr::supervisor_virt(UMODE_DYNVA_START)).unwrap();
+        // Ignore unmapped addresses of pages.
+        let _ = self.sv48.unmap_range(base, PageSize::Size4k, UMODE_DYNVA_SIZE / PageSize::Size4k as u64).map_err(|_| Error::UnmapFailed)?;
+        self.umode_brk = base;
+        Ok(())
     }
 }
 

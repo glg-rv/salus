@@ -775,6 +775,8 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
         Ok(FirstStageMapper::new(self, addr, page_size, num_pages))
     }
 
+    /// Verifies that entire virtual address range is mapped or unpopulated, returning an iterator
+    /// that yields the pages after clearing their PTES.
     pub fn unmap_range(
         &self,
         base: PageAddr<T::MappedAddressSpace>,
