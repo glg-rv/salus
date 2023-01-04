@@ -5,7 +5,9 @@
 use arrayvec::ArrayVec;
 use page_tracking::{HwMemMap, HwMemRegion, HwMemRegionType, HwReservedMemType, HypPageAlloc};
 use riscv_elf::{ElfMap, ElfSegment, ElfSegmentPerms};
-use riscv_page_tables::{FirstStageMapper, FirstStagePageTable, PagingMode, PteFieldBits, PteLeafPerms, Sv48};
+use riscv_page_tables::{
+    FirstStageMapper, FirstStagePageTable, PagingMode, PteFieldBits, PteLeafPerms, Sv48,
+};
 use riscv_pages::{
     InternalClean, Page, PageAddr, PageSize, RawAddr, SeqPageIter, SupervisorPhys, SupervisorVirt,
 };
@@ -229,7 +231,8 @@ impl PrivateRegion {
 
 /// Wrapper for a `FirstStageMapper` for U-mode dynamic mappings.
 pub struct UmodeDynamicMapper<'a> {
-    inner: FirstStageMapper<'a, Sv48>,
+    base: PageAddr<SupervisorVirt>,
+    mapper: FirstStageMapper<'a, Sv48>,
 }
 
 /// Maps `vaddr` to `paddr` as U-mode mappings. The caller must guarantee that paddr points to a
@@ -239,12 +242,36 @@ pub struct UmodeDynamicMapper<'a> {
 ///
 /// Don't create aliases.
 impl<'a> UmodeDynamicMapper<'a> {
-    pub unsafe fn map_umode_writable(&self, vaddr: PageAddr<SupervisorVirt>, paddr: PageAddr<SupervisorPhys>) -> Result<(), Error> {
-        self.inner.map_addr(vaddr, paddr, PteFieldBits::leaf_with_perms(PteLeafPerms::URW)).map_err(|_| Error::MapFailed)
+    pub fn base(&self) -> PageAddr<SupervisorVirt> {
+        self.base
     }
 
-    pub unsafe fn map_umode_readonly(&self, vaddr: PageAddr<SupervisorVirt>, paddr: PageAddr<SupervisorPhys>) -> Result<(), Error> {
-        self.inner.map_addr(vaddr, paddr, PteFieldBits::leaf_with_perms(PteLeafPerms::UR)).map_err(|_| Error::MapFailed)
+    pub unsafe fn map_umode_writable(
+        &self,
+        vaddr: PageAddr<SupervisorVirt>,
+        paddr: PageAddr<SupervisorPhys>,
+    ) -> Result<(), Error> {
+        self.mapper
+            .map_addr(
+                vaddr,
+                paddr,
+                PteFieldBits::leaf_with_perms(PteLeafPerms::URW),
+            )
+            .map_err(|_| Error::MapFailed)
+    }
+
+    pub unsafe fn map_umode_readonly(
+        &self,
+        vaddr: PageAddr<SupervisorVirt>,
+        paddr: PageAddr<SupervisorPhys>,
+    ) -> Result<(), Error> {
+        self.mapper
+            .map_addr(
+                vaddr,
+                paddr,
+                PteFieldBits::leaf_with_perms(PteLeafPerms::UR),
+            )
+            .map_err(|_| Error::MapFailed)
     }
 }
 
@@ -268,7 +295,10 @@ impl HypPageTable {
 
     // Allocate `num_4k_pages` for U-mode dynamic mappings.
     fn alloc_umode_dynmap(&mut self, num_4k_pages: u64) -> Result<PageAddr<SupervisorVirt>, Error> {
-        let new_brk = self.umode_brk.checked_add_pages(num_4k_pages).ok_or(Error::AddressOverflow)?;
+        let new_brk = self
+            .umode_brk
+            .checked_add_pages(num_4k_pages)
+            .ok_or(Error::AddressOverflow)?;
         if new_brk.bits() < UMODE_DYNVA_END {
             let old_brk = self.umode_brk;
             self.umode_brk = new_brk;
@@ -279,14 +309,18 @@ impl HypPageTable {
     }
 
     /// Returns a mapper that allows to map `num_4k_pages` for use by U-mode.
-    pub fn map_umode_dynmap_range(&mut self, num_4k_pages: u64) -> Result<UmodeDynamicMapper, Error> {
+    pub fn map_umode_dynmap_range(
+        &mut self,
+        num_4k_pages: u64,
+    ) -> Result<UmodeDynamicMapper, Error> {
         let base = self.alloc_umode_dynmap(num_4k_pages)?;
-        let mapper = self.sv48.map_range(base, PageSize::Size4k, num_4k_pages, &mut || {
-            self.pte_pages.next()
-        }).map_err(|_| Error::MapperCreationFailed)?;
-        Ok(UmodeDynamicMapper {
-            inner: mapper,
-        })
+        let mapper = self
+            .sv48
+            .map_range(base, PageSize::Size4k, num_4k_pages, &mut || {
+                self.pte_pages.next()
+            })
+            .map_err(|_| Error::MapperCreationFailed)?;
+        Ok(UmodeDynamicMapper { mapper, base })
     }
 
     /// Unmap all U-mode dynamic mappings and reset allocation.
@@ -294,7 +328,14 @@ impl HypPageTable {
         // Unwrap okay: UMODE_DYNVA_START is a constant and must be page aligned.
         let base = PageAddr::new(RawAddr::supervisor_virt(UMODE_DYNVA_START)).unwrap();
         // Ignore unmapped addresses of pages.
-        let _ = self.sv48.unmap_range(base, PageSize::Size4k, UMODE_DYNVA_SIZE / PageSize::Size4k as u64).map_err(|_| Error::UnmapFailed)?;
+        let _ = self
+            .sv48
+            .unmap_range(
+                base,
+                PageSize::Size4k,
+                UMODE_DYNVA_SIZE / PageSize::Size4k as u64,
+            )
+            .map_err(|_| Error::UnmapFailed)?;
         self.umode_brk = base;
         Ok(())
     }
@@ -347,10 +388,17 @@ impl HypMap {
             r.map(&sv48, hyp_mem);
         }
         // Alloc pte_pages for U-mode mappings.
-        let pte_pages = hyp_mem.take_pages_for_hyp_state(Sv48::max_pte_pages(UMODE_DYNVA_SIZE / PageSize::Size4k as u64) as usize).into_iter();
+        let pte_pages = hyp_mem
+            .take_pages_for_hyp_state(Sv48::max_pte_pages(
+                UMODE_DYNVA_SIZE / PageSize::Size4k as u64,
+            ) as usize)
+            .into_iter();
         // Unwrap okay: UMODE_DYNVA_START is a constant and must be page aligned.
         let umode_brk = PageAddr::new(RawAddr::supervisor_virt(UMODE_DYNVA_START)).unwrap();
-        HypPageTable { sv48, umode_brk, pte_pages, }
+        HypPageTable {
+            sv48,
+            umode_brk,
+            pte_pages,
+        }
     }
 }
-
