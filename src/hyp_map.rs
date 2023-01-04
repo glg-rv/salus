@@ -34,6 +34,8 @@ pub enum Error {
     OutOfDynamicMap,
     /// Could not create a mapper for the U-mode dynamic area.
     MapperCreationFailed,
+    /// Could not map the U-mode dynamic area.
+    MapFailed,
     /// Could not unmap the U-mode dynamic area.
     UnmapFailed,
 }
@@ -128,7 +130,7 @@ const UMODE_VA_END: u64 = UMODE_VA_START + UMODE_VA_SIZE;
 // Start of the private U-mode dynamic mappings area.
 const UMODE_DYNVA_START: u64 = UMODE_VA_END + 4 * 1024;
 // Maximum size of the private dynamic mappings area.
-const UMODE_DYNVA_SIZE: u64 = 1 * 1024 * 1024;
+const UMODE_DYNVA_SIZE: u64 = 2 * 1024 * 1024;
 // End of the private dynamic mappings area.
 const UMODE_DYNVA_END: u64 = UMODE_DYNVA_START + UMODE_DYNVA_SIZE;
 
@@ -225,9 +227,25 @@ impl PrivateRegion {
     }
 }
 
+/// Wrapper for a `FirstStageMapper` for U-mode dynamic mappings.
 pub struct UmodeDynamicMapper<'a> {
-    base: PageAddr<SupervisorVirt>,
-    mapper: FirstStageMapper<'a, Sv48>,
+    inner: FirstStageMapper<'a, Sv48>,
+}
+
+/// Maps `vaddr` to `paddr` as U-mode mappings. The caller must guarantee that paddr points to a
+/// page it is safe to map in U-mode.
+///
+/// # Safety
+///
+/// Don't create aliases.
+impl<'a> UmodeDynamicMapper<'a> {
+    pub unsafe fn map_umode_writable(&self, vaddr: PageAddr<SupervisorVirt>, paddr: PageAddr<SupervisorPhys>) -> Result<(), Error> {
+        self.inner.map_addr(vaddr, paddr, PteFieldBits::leaf_with_perms(PteLeafPerms::URW)).map_err(|_| Error::MapFailed)
+    }
+
+    pub unsafe fn map_umode_readonly(&self, vaddr: PageAddr<SupervisorVirt>, paddr: PageAddr<SupervisorPhys>) -> Result<(), Error> {
+        self.inner.map_addr(vaddr, paddr, PteFieldBits::leaf_with_perms(PteLeafPerms::UR)).map_err(|_| Error::MapFailed)
+    }
 }
 
 /// A page table that contains hypervisor mappings.
@@ -267,8 +285,7 @@ impl HypPageTable {
             self.pte_pages.next()
         }).map_err(|_| Error::MapperCreationFailed)?;
         Ok(UmodeDynamicMapper {
-            base,
-            mapper,
+            inner: mapper,
         })
     }
 
