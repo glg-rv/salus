@@ -2,12 +2,18 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::smp::PerCpu;
+use crate::vm_pages::PinnedPages;
+
 use arrayvec::ArrayVec;
+use core::cell::RefCell;
 use page_tracking::{HwMemMap, HwMemRegion, HwMemRegionType, HwReservedMemType, HypPageAlloc};
 use riscv_elf::{ElfMap, ElfSegment, ElfSegmentPerms};
-use riscv_page_tables::{FirstStagePageTable, PteFieldBits, PteLeafPerms, Sv48};
+use riscv_page_tables::{
+    tlb::sfence_vma, FirstStagePageTable, PagingMode, PteFieldBits, PteLeafPerms, Sv48,
+};
 use riscv_pages::{
-    InternalClean, Page, PageAddr, PageSize, RawAddr, SupervisorPhys, SupervisorVirt,
+    InternalClean, Page, PageAddr, PageSize, RawAddr, SeqPageIter, SupervisorPhys, SupervisorVirt,
 };
 use riscv_regs::{satp, sstatus, LocalRegisterCopy, ReadWriteable, SatpHelpers, CSR};
 use spin::Once;
@@ -22,13 +28,23 @@ type PrivateRegionsVec = ArrayVec<PrivateRegion, MAX_PRIVATE_REGIONS>;
 // Shared regions vector.
 type SharedRegionsVec = ArrayVec<SharedRegion, MAX_SHARED_REGIONS>;
 
-/// Errors returned by HypMap.
+/// Errors returned by creating or modifying hypervisor mappings.
 #[derive(Debug)]
 pub enum Error {
     /// U-mode ELF segment is not page aligned.
     ElfUnalignedSegment,
     /// U-mode ELF segment is not in U-mode VA area.
     ElfInvalidAddress,
+    /// Invalid U-mode Slot Number
+    InvalidSlot,
+    /// Not enough space on the U-mode map area.
+    OutOfMap,
+    /// Could not create a mapper for the U-mode area.
+    MapperCreationFailed,
+    /// Could not map the U-mode area.
+    MapFailed,
+    /// Could not unmap the U-mode area.
+    UnmapFailed,
 }
 
 // Represents a virtual address region of the hypervisor that will be the same in all pagetables.
@@ -111,12 +127,25 @@ impl SharedRegion {
     }
 }
 
-// U-mode mappings start here.
+// U-mode binary mappings start here.
 const UMODE_VA_START: u64 = 0xffffffff00000000;
-// Size in bytes of the U-mode VA area.
+// Size in bytes of the U-mode binary VA area.
 const UMODE_VA_SIZE: u64 = 128 * 1024 * 1024;
-// U-mode mappings end here.
+// U-mode binary mappings end here.
 const UMODE_VA_END: u64 = UMODE_VA_START + UMODE_VA_SIZE;
+
+// The addresses between `UMODE_MAPPINGS_START` and `UMODE_MAPPINGS_END` is an area of the private
+// page table where the hypervisor can map pages shared from guest VMs. The area is divided in
+// slots, of equal size `UMODE_MAPPING_SLOT_SIZE`.
+const UMODE_MAPPING_SLOT_SIZE: u64 = 4 * 1024 * 1024;
+//The number of slots available for mapping.
+// mapping.
+const UMODE_MAPPING_SLOTS: u64 = 2;
+
+// Start of the private U-mode mappings area.
+const UMODE_MAPPINGS_START: u64 = UMODE_VA_END + 4 * 1024 * 1024;
+// Maximum size of the private mappings area.
+const UMODE_MAPPINGS_SIZE: u64 = UMODE_MAPPING_SLOTS * UMODE_MAPPING_SLOT_SIZE;
 
 // Returns true if `addr` is contained in the U-mode VA area.
 fn is_umode_addr(addr: u64) -> bool {
@@ -251,14 +280,17 @@ impl PrivateRegion {
 
 /// A page table that contains hypervisor mappings.
 pub struct HypPageTable {
-    inner: FirstStagePageTable<Sv48>,
+    /// The pagetable containing hypervisor mappings.
+    sv48: FirstStagePageTable<Sv48>,
+    /// A pte page pool for U-mode mappings.
+    pte_pages: RefCell<SeqPageIter<InternalClean>>,
 }
 
 impl HypPageTable {
     /// Return the value of the SATP register for this page table.
     pub fn satp(&self) -> u64 {
         let mut satp = LocalRegisterCopy::<u64, satp::Register>::new(0);
-        satp.set_from(&self.inner, 0);
+        satp.set_from(&self.sv48, 0);
         satp.get()
     }
 
@@ -270,6 +302,71 @@ impl HypPageTable {
         {
             r.restore();
         }
+    }
+
+    // Return the virtual address of U-mode mapping slot `slot`.
+    fn umode_slot_va(slot: u64) -> Result<PageAddr<SupervisorVirt>, Error> {
+        if slot < UMODE_MAPPING_SLOTS {
+            // Unwrap okay: the result is dependent on constant that must be page aligned.
+            Ok(PageAddr::new(RawAddr::supervisor_virt(
+                UMODE_MAPPINGS_START + slot * UMODE_MAPPING_SLOT_SIZE,
+            ))
+            .unwrap())
+        } else {
+            Err(Error::InvalidSlot)
+        }
+    }
+
+    // Map a set of pages pinned for sharing with the hypervisor into a U-mode slot.
+    fn map_umode_slot(
+        &self,
+        slot: u64,
+        pages: &PinnedPages,
+        writable: bool,
+    ) -> Result<PageAddr<SupervisorVirt>, Error> {
+        let num_pages = pages.range().num_pages();
+        if num_pages > PageSize::num_4k_pages(UMODE_MAPPING_SLOT_SIZE) {
+            return Err(Error::OutOfMap);
+        }
+        let vaddr = Self::umode_slot_va(slot)?;
+        let mapper = self
+            .sv48
+            .map_range(vaddr, PageSize::Size4k, num_pages, &mut || {
+                self.pte_pages.borrow_mut().next()
+            })
+            .map_err(|_| Error::MapperCreationFailed)?;
+        let perms = if writable {
+            PteFieldBits::leaf_with_perms(PteLeafPerms::URW)
+        } else {
+            PteFieldBits::leaf_with_perms(PteLeafPerms::UR)
+        };
+        for (virt, phys) in vaddr
+            .iter_from()
+            .zip(pages.range().base().iter_from())
+            .take(num_pages as usize)
+        {
+            // Safe because pages are mapped in U-mode and cannot be accessed by the hypervisor directly.
+            unsafe {
+                mapper
+                    .map_addr(virt, phys, perms)
+                    .map_err(|_| Error::MapFailed)?;
+            }
+        }
+        Ok(vaddr)
+    }
+
+    // Unmap `num_pages` from umode slot `slot`.
+    fn unmap_umode_slot(&self, slot: u64, num_pages: u64) -> Result<(), Error> {
+        let vaddr = Self::umode_slot_va(slot)?;
+        if num_pages > PageSize::num_4k_pages(UMODE_MAPPING_SLOT_SIZE) {
+            return Err(Error::OutOfMap);
+        }
+        self.sv48
+            .unmap_range(vaddr, PageSize::Size4k, num_pages)
+            .map_err(|_| Error::UnmapFailed)?;
+        // update TLB at each hypervisor map change.
+        sfence_vma(None, None);
+        Ok(())
     }
 }
 
@@ -283,7 +380,7 @@ pub struct HypMap {
 }
 
 impl HypMap {
-    // Create a new hypervisor map from a hardware memory mem map and a umode ELF.
+    /// Create a new hypervisor map from a hardware memory mem map and a umode ELF.
     pub fn init(mem_map: HwMemMap, umode_elf: &ElfMap<'static>) -> Result<(), Error> {
         // All shared mappings come from the HW Memory Map.
         let shared_regions = mem_map
@@ -335,6 +432,52 @@ impl HypMap {
         for r in &self.private_regions {
             r.map(&sv48, hyp_mem);
         }
-        HypPageTable { inner: sv48 }
+        // Alloc pte_pages for U-mode mappings.
+        let pte_pages = hyp_mem
+            .take_pages_for_hyp_state(Sv48::max_pte_pages(
+                UMODE_MAPPINGS_SIZE / PageSize::Size4k as u64,
+            ) as usize)
+            .into_iter();
+        HypPageTable {
+            sv48,
+            pte_pages: RefCell::new(pte_pages),
+        }
+    }
+}
+
+/// Represents a mapped slot with pinned guest pages.
+pub struct UmodeMapping {
+    /// The slot number
+    slot: u64,
+    /// The virtual page address where the mapping starts.
+    vaddr: PageAddr<SupervisorVirt>,
+    /// The mapped pinned pages.
+    pages: PinnedPages,
+}
+
+impl UmodeMapping {
+    /// Returns the virtual address of the start of the mapping.
+    pub fn vaddr(&self) -> PageAddr<SupervisorVirt> {
+        self.vaddr
+    }
+
+    /// Creates a new `UmodeMapping` at slot `slot`, mapping `pages` into it.
+    /// The call will fail is the slot is already mapped.
+    pub fn new(slot: u64, pages: PinnedPages, writable: bool) -> Result<Self, Error> {
+        let vaddr = PerCpu::this_cpu()
+            .page_table()
+            .map_umode_slot(slot, &pages, writable)?;
+        Ok(UmodeMapping { slot, vaddr, pages })
+    }
+}
+
+// On drop, UmodeMapping will first unmap the pages, then unpin them (through PinnedPages drop).
+impl Drop for UmodeMapping {
+    fn drop(&mut self) {
+        let page_table = PerCpu::this_cpu().page_table();
+        // Unwrap okay: on construction slot was mapped, and the unmap must succeed.
+        page_table
+            .unmap_umode_slot(self.slot, self.pages.range().num_pages())
+            .unwrap();
     }
 }
