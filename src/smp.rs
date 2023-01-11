@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use core::arch::asm;
-use core::cell::{RefCell, RefMut};
+use core::cell::{Ref, RefCell, RefMut};
 use drivers::{imsic::Imsic, CpuId, CpuInfo};
 use page_tracking::{HwMemMap, HwMemRegionType, HwReservedMemType};
 use riscv_pages::{PageSize, RawAddr, SupervisorPageAddr};
@@ -27,7 +27,7 @@ extern "C" {
 pub struct PerCpu {
     cpu_id: CpuId,
     vmid_tracker: RefCell<VmIdTracker>,
-    page_table: Once<HypPageTable>,
+    page_table: Once<RefCell<HypPageTable>>,
     umode_task: Once<RefCell<UmodeTask>>,
     online: Once<bool>,
 }
@@ -121,7 +121,7 @@ impl PerCpu {
         let pcpu = Self::ptr_for_cpu(cpu);
         // Safe since pcpu is set up to point to a valid PerCpu struct in init().
         unsafe {
-            (*pcpu).page_table.call_once(|| page_table);
+            (*pcpu).page_table.call_once(|| RefCell::new(page_table));
         }
     }
 
@@ -142,9 +142,16 @@ impl PerCpu {
 
     /// Get the CPU page table. Must be called after `set_cpu_page_table` has been called for this
     /// cpu.
-    pub fn page_table(&self) -> &HypPageTable {
+    pub fn page_table(&self) -> Ref<HypPageTable> {
         // Unwrap okay: this is called after `set_cpu_page_table`
-        self.page_table.get().unwrap()
+        self.page_table.get().unwrap().borrow()
+    }
+
+    /// Get the CPU page table for mappings. Must be called after `set_cpu_page_table` has been
+    /// called for this cpu.
+    pub fn page_table_mut(&self) -> RefMut<HypPageTable> {
+        // Unwrap okay: this is called after `set_cpu_page_table`
+        self.page_table.get().unwrap().borrow_mut()
     }
 
     /// Get the  CPU umode structure. Must be  called after `set_umode_task` has been  called for this

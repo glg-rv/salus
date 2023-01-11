@@ -56,6 +56,7 @@ impl PteFieldBit {
 
 /// Permissions for a leaf page entry.
 #[allow(clippy::upper_case_acronyms)]
+#[derive(Clone, Copy)]
 pub enum PteLeafPerms {
     /// Read only
     R = PteFieldBit::Read.mask() as isize,

@@ -204,6 +204,7 @@ pub struct PinnedPages {
 
 impl PinnedPages {
     // Safety: The caller must guarantee that the pages in the specified range are in the "Shared"
+    /* GIANLUCA: This should be shared or mapped, right? */
     // state and are owned by `owner`.
     unsafe fn new(
         range: SupervisorPageRange,
@@ -1611,7 +1612,7 @@ impl<'a, T: GuestStagePagingMode> FinalizedVmPages<'a, T> {
 
     /// Pins `count` physically-contiguous pages starting at `page_addr` as shared pages, returning
     /// a `PinnedPages` structure that will release the pin when dropped. Used to share memory
-    /// between a VM on the hypervisor.
+    /// between a VM and the hypervisor.
     pub fn pin_shared_pages(&self, page_addr: GuestPageAddr, count: u64) -> Result<PinnedPages> {
         if count == 0 {
             return Err(Error::EmptyPageRange);

@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::hyp_map::Error as HypMapError;
 use crate::smp::PerCpu;
+use crate::vm_pages::PinnedPages;
 
 use core::arch::global_asm;
 use core::fmt;
@@ -10,8 +12,9 @@ use core::mem::size_of;
 use core::ops::ControlFlow;
 use memoffset::offset_of;
 use riscv_elf::ElfMap;
-use riscv_regs::Exception::UserEnvCall;
-use riscv_regs::{GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
+use riscv_page_tables::{PteFieldBits, PteLeafPerms};
+use riscv_pages::{PageAddr, SupervisorVirt};
+use riscv_regs::{Exception::UserEnvCall, GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use s_mode_utils::print::*;
 use spin::Once;
 use u_mode_api::{Error as UmodeApiError, HypCall, TryIntoRegisters, UmodeRequest};
@@ -227,7 +230,7 @@ global_asm!(
     umode_sstatus = const umode_csr_offset!(sstatus),
 );
 
-/// Errors returned by U-mode runs.
+/// Errors returned by U-mode operations.
 #[derive(Debug)]
 pub enum Error {
     /// Received an unexpected trap while running Umode.
@@ -236,6 +239,8 @@ pub enum Error {
     Panic,
     /// Error in umode.
     Umode(UmodeApiError),
+    /// Mapping Error.
+    MappingError(HypMapError),
 }
 
 // Entry for umode task.
@@ -272,6 +277,37 @@ impl UmodeTask {
         PerCpu::this_cpu().set_umode_task(task);
         Ok(())
     }
+    /*
+       pub fn map_shared_pages(pages: PinnedPages) -> UmodeMappedPages {
+           let mut page_table = PerCpu::this_cpu().page_table_mut();
+           let num_pages = pages.range().num_pages();
+           let umode_mapper = page_table.umode_mapper(num_pages)?;
+           for (virt, phys) in umode_mapper.base()
+               .iter_from()
+               .zip(pages.range().base().iter_from())
+               .take(num_pages as usize)
+           {
+               println!("Mapping {:x?} to {:x?}", phys, virt);
+               mapper.map_
+               unsafe {
+                   mapper.map_addr(virt, phys, perms.clone()).map_err(Error::MappingError)?;
+               }
+           }
+
+       }
+    */
+    /*    pub fn map_slot_readonly(slot: u64, pages: PinnedPages) -> Result<UmodeMappings, Error> {
+         let mut page_table = PerCpu::this_cpu().page_table_mut();
+         let vaddr = page_table.map_umode_slot_readonly(slot, pages).map_err(|_| Error::SlotMapFailed)?;
+         UmodeMappings { vaddr, pages }
+     }
+
+     pub fn map_slot_writable(slot: u64, pages: PinnedPages) -> Result<UmodeMappings, Error> {
+         let mut page_table = PerCpu::this_cpu().page_table_mut();
+         let vaddr = page_table.map_umode_slot_writable(slot, pages).map_err(|_| Error::SlotMapFailed)?;
+         UmodeMappings { vaddr, pages }
+     }
+    */
 
     /// Send a request and execute U-mode until an error is returned.
     pub fn send_req(req: UmodeRequest) -> Result<(), Error> {

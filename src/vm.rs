@@ -16,10 +16,13 @@ use s_mode_utils::print::*;
 use sbi::{Error as SbiError, *};
 
 use crate::guest_tracking::{GuestStateGuard, GuestVm, Guests};
+use crate::hyp_map::UmodeMapping;
+use crate::umode::UmodeTask;
 use crate::vm_cpu::{ActiveVmCpu, VmCpu, VmCpuParent, VmCpuStatus, VmCpuTrap, VmCpus, VM_CPUS_MAX};
 use crate::vm_pages::Error as VmPagesError;
 use crate::vm_pages::{
-    ActiveVmPages, AnyVmPages, InstructionFetchError, PageFaultType, VmPages, VmPagesRef,
+    ActiveVmPages, AnyVmPages, InstructionFetchError, PageFaultType, PinnedPages, VmPages,
+    VmPagesRef,
 };
 
 #[derive(Debug)]
@@ -723,7 +726,9 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 self.handle_attestation_msg(attestation_func, active_vcpu.active_pages())
             }
             SbiMessage::Pmu(pmu_func) => self.handle_pmu_msg(pmu_func, active_vcpu).into(),
-            SbiMessage::RivosTest(test_function) => self.handle_test(test_function, active_vcpu.active_pages()),
+            SbiMessage::RivosTest(test_function) => {
+                self.handle_test(test_function, active_vcpu.active_pages())
+            }
         }
     }
 
@@ -1010,15 +1015,6 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 .into(),
             TvmInitiateFence { guest_id } => self.guest_initiate_fence(guest_id).into(),
         }
-    }
-
-    fn handle_test(
-        &self,
-        _test_func: RivosTestFunction,
-        _active_pages: &ActiveVmPages<T>,
-    ) -> EcallAction {
-        // TODO
-        EcallAction::Unhandled
     }
 
     fn get_tsm_info(
@@ -1485,6 +1481,99 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
             .vm_pages()
             .initiate_fence()
             .map_err(EcallError::from)?;
+        Ok(0)
+    }
+
+    fn handle_test(
+        &self,
+        test_func: RivosTestFunction,
+        _active_pages: &ActiveVmPages<T>,
+    ) -> EcallAction {
+        use RivosTestFunction::*;
+        match test_func {
+            MemCopy(args) => self.guest_test_memcopy(args.to, args.from, args.len).into(),
+        }
+    }
+
+    fn map_guest_range_in_umode_slot(
+        &self,
+        slot: u64,
+        addr: u64,
+        len: u64,
+    ) -> EcallResult<(u64, UmodeMapping)> {
+        let base = PageSize::Size4k.round_down(addr);
+        let end = addr
+            .checked_add(len)
+            .ok_or(EcallError::Sbi(SbiError::InvalidParam))?;
+        let pages = self
+            .vm_pages()
+            .pin_shared_pages(
+                self.guest_addr_from_raw(base)?,
+                PageSize::num_4k_pages(end - base),
+            )
+            .map_err(EcallError::from)?;
+        let mapping = UmodeMapping::new_readonly(slot, pages)
+            .map_err(|_| EcallError::Sbi(SbiError::Failed))?;
+        let vaddr = mapping.vaddr().bits() + (addr - base);
+        Ok((vaddr, mapping))
+    }
+    fn pin_guest_range(&self, addr: u64, len: u64) -> EcallResult<PinnedPages> {
+        let base = PageSize::Size4k.round_down(addr);
+        let base_addr = self.guest_addr_from_raw(base)?;
+        let end = addr
+            .checked_add(len)
+            .ok_or(EcallError::Sbi(SbiError::Failed))?;
+        self.vm_pages()
+            .pin_shared_pages(base_addr, PageSize::num_4k_pages(end - base))
+            .map_err(EcallError::from)
+    }
+
+    fn guest_test_memcopy(&self, to: u64, from: u64, len: u64) -> EcallResult<u64> {
+        let overlap = core::cmp::max(to, from) <= core::cmp::min(to + len - 1, from + len - 1);
+        if overlap {
+            println!(
+                "HERE {:x?}, {:x?} <-> {:x?}, {:x?}",
+                to,
+                to + len,
+                from,
+                from + len
+            );
+            return Err(EcallError::Sbi(SbiError::InvalidParam));
+        }
+        let (from_vaddr, from_mapping) = self.map_guest_range_in_umode_slot(0, from, len)?;
+        let (to_vaddr, to_mapping) = self.map_guest_range_in_umode_slot(1, to, len)?;
+
+        /*
+        // Map `from` in slot 0.
+        let from_pages = self.pin_guest_range(from, len)?;
+        let from_mappings = UmodeMapping::new_readonly(0, from_pages).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
+         */
+        /*
+        // Map `to` in slot 1.
+        let to_pages = self.pin_guest_range(to, len)?;
+        let to_mappings = UmodeMapping::new_writable(1, to_pages).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
+         */
+
+        //        let to_mappings = UmodeMapping::new_writable(0, to_pages).map_err(|_| EcallError::Sbi(SbiError::Failed));
+        /* ON THE SAFETY REQUIREMENT I NEED TO SPECIFY THAT WE CHECKED OVERLAPPING AND THEY ARE MAPPED TO DIFFERENT SLOTS. */
+
+        // TODO: CHECK NOT OVERLAPPING.
+        /*
+                let from_base = PageSize::Size4k.round_down(from);
+                let from_end = addr.checked_add(len)?;
+                // Pin the pages that the VM wants to map in user mode.
+                let from_pages = self.vm_pages().pin_shared_pages(to_addr, PageSize::num_4k_pages(from_end - from_base));
+                let from_mappings = page_table.map_umode_slot_readonly(from_pages)?;
+
+                let to_base = PageSize::Size4k.round_down(to);
+                let to_end = addr.checked_add(len)?;
+                // Pin the pages that the VM wants to map in user mode.
+                let to_pages = self.vm_pages().pin_shared_pages(to_addr, PageSize::num_4k_pages(to_end - to_base));
+                let to_vaddr = page_table.alloc_umode_va(to_pages.range().num_pages()).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
+
+
+                UmodeTask::map_pinned_pages_writable(to_pinned).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
+        */
         Ok(0)
     }
 

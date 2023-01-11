@@ -782,8 +782,8 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
         base: PageAddr<T::MappedAddressSpace>,
         page_size: PageSize,
         num_pages: u64,
-    ) -> Result<impl Iterator<Item = SupervisorPageAddr> + '_> {
-        // TODO: Support hyge pages.
+    ) -> Result<()> {
+        // TODO: Support huge pages.
         if page_size.is_huge() {
             return Err(Error::PageSizeNotSupported(page_size));
         }
@@ -799,26 +799,20 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
                     }
                     continue;
                 }
-                Unused(_) => {
-                    continue;
-                }
                 _ => {
                     return Err(Error::PageNotMapped);
                 }
             }
         }
-        Ok(base
-            .iter_from()
-            .take(num_pages as usize)
-            .filter_map(move |addr| {
-                // Skip over unmapped PTEs -- we verified there were no locked PTEs
-                // above.
-                let pte = inner.get_mapped_4k_leaf(addr).ok()?;
-                let paddr = pte.page_addr();
-                // First Stage page table do not have an Invalidated State. Clear the LeafPte directly.
-                pte.pte.clear();
-                Some(paddr)
-            }))
+        for addr in base.iter_from().take(num_pages as usize) {
+            // Skip over unmapped PTEs -- we verified there were no locked PTEs
+            // above.
+            let mut pte = inner.get_mapped_4k_leaf(addr)?;
+            let paddr = pte.page_addr();
+            // First Stage page table do not have an Invalidated State. Clear the LeafPte directly.
+            pte.pte.clear();
+        }
+        Ok(())
     }
 }
 

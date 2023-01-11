@@ -176,7 +176,7 @@ impl SbiMessage {
             TeeGuest(_) => EXT_TEE_GUEST,
             Attestation(_) => EXT_ATTESTATION,
             Pmu(_) => EXT_PMU,
-	    RivosTest(_) => EXT_RIVOS_TEST,
+            RivosTest(_) => EXT_RIVOS_TEST,
         }
     }
 
