@@ -1542,38 +1542,9 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         }
         let (from_vaddr, from_mapping) = self.map_guest_range_in_umode_slot(0, from, len)?;
         let (to_vaddr, to_mapping) = self.map_guest_range_in_umode_slot(1, to, len)?;
-
-        /*
-        // Map `from` in slot 0.
-        let from_pages = self.pin_guest_range(from, len)?;
-        let from_mappings = UmodeMapping::new_readonly(0, from_pages).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
-         */
-        /*
-        // Map `to` in slot 1.
-        let to_pages = self.pin_guest_range(to, len)?;
-        let to_mappings = UmodeMapping::new_writable(1, to_pages).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
-         */
-
-        //        let to_mappings = UmodeMapping::new_writable(0, to_pages).map_err(|_| EcallError::Sbi(SbiError::Failed));
-        /* ON THE SAFETY REQUIREMENT I NEED TO SPECIFY THAT WE CHECKED OVERLAPPING AND THEY ARE MAPPED TO DIFFERENT SLOTS. */
-
-        // TODO: CHECK NOT OVERLAPPING.
-        /*
-                let from_base = PageSize::Size4k.round_down(from);
-                let from_end = addr.checked_add(len)?;
-                // Pin the pages that the VM wants to map in user mode.
-                let from_pages = self.vm_pages().pin_shared_pages(to_addr, PageSize::num_4k_pages(from_end - from_base));
-                let from_mappings = page_table.map_umode_slot_readonly(from_pages)?;
-
-                let to_base = PageSize::Size4k.round_down(to);
-                let to_end = addr.checked_add(len)?;
-                // Pin the pages that the VM wants to map in user mode.
-                let to_pages = self.vm_pages().pin_shared_pages(to_addr, PageSize::num_4k_pages(to_end - to_base));
-                let to_vaddr = page_table.alloc_umode_va(to_pages.range().num_pages()).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
-
-
-                UmodeTask::map_pinned_pages_writable(to_pinned).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
-        */
+        // Safe because we checked that the two ranges do not overlap.
+        let request = unsafe { u_mode_api::UmodeRequest::memcopy(to_vaddr, from_vaddr, len) };
+        UmodeTask::send_req(request).unwrap();
         Ok(0)
     }
 

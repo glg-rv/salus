@@ -277,37 +277,6 @@ impl UmodeTask {
         PerCpu::this_cpu().set_umode_task(task);
         Ok(())
     }
-    /*
-       pub fn map_shared_pages(pages: PinnedPages) -> UmodeMappedPages {
-           let mut page_table = PerCpu::this_cpu().page_table_mut();
-           let num_pages = pages.range().num_pages();
-           let umode_mapper = page_table.umode_mapper(num_pages)?;
-           for (virt, phys) in umode_mapper.base()
-               .iter_from()
-               .zip(pages.range().base().iter_from())
-               .take(num_pages as usize)
-           {
-               println!("Mapping {:x?} to {:x?}", phys, virt);
-               mapper.map_
-               unsafe {
-                   mapper.map_addr(virt, phys, perms.clone()).map_err(Error::MappingError)?;
-               }
-           }
-
-       }
-    */
-    /*    pub fn map_slot_readonly(slot: u64, pages: PinnedPages) -> Result<UmodeMappings, Error> {
-         let mut page_table = PerCpu::this_cpu().page_table_mut();
-         let vaddr = page_table.map_umode_slot_readonly(slot, pages).map_err(|_| Error::SlotMapFailed)?;
-         UmodeMappings { vaddr, pages }
-     }
-
-     pub fn map_slot_writable(slot: u64, pages: PinnedPages) -> Result<UmodeMappings, Error> {
-         let mut page_table = PerCpu::this_cpu().page_table_mut();
-         let vaddr = page_table.map_umode_slot_writable(slot, pages).map_err(|_| Error::SlotMapFailed)?;
-         UmodeMappings { vaddr, pages }
-     }
-    */
 
     /// Send a request and execute U-mode until an error is returned.
     pub fn send_req(req: UmodeRequest) -> Result<(), Error> {
