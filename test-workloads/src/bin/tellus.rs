@@ -30,7 +30,7 @@ use riscv_regs::{
 use s_mode_utils::abort::abort;
 use s_mode_utils::ecall::ecall_send;
 use s_mode_utils::{print::*, sbi_console::SbiConsole};
-use sbi::api::{base, nacl, pmu, reset, tee_host, tee_interrupt, rivos_test};
+use sbi::api::{base, nacl, pmu, reset, rivos_test, tee_host, tee_interrupt};
 use sbi::{
     Error as SbiError, PmuCounterConfigFlags, PmuCounterStartFlags, PmuCounterStopFlags,
     PmuEventType, PmuFirmware, PmuHardware, SbiMessage, SbiReturn, EXT_PMU, EXT_TEE_HOST,
