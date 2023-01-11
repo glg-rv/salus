@@ -774,6 +774,43 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
 
         Ok(FirstStageMapper::new(self, addr, page_size, num_pages))
     }
+
+    /// Verifies that entire virtual address range is mapped and not locked, and clear the PTEs.
+    pub fn unmap_range(
+        &self,
+        base: PageAddr<T::MappedAddressSpace>,
+        page_size: PageSize,
+        num_pages: u64,
+    ) -> Result<()> {
+        // TODO: Support huge pages.
+        if page_size.is_huge() {
+            return Err(Error::PageSizeNotSupported(page_size));
+        }
+        base.checked_add_pages(num_pages)
+            .ok_or(Error::AddressOverflow)?;
+        let mut inner = self.inner.lock();
+        for addr in base.iter_from().take(num_pages as usize) {
+            use TableEntryType::*;
+            match inner.walk(addr.into()) {
+                Leaf(pte) => {
+                    if !pte.level().is_leaf() {
+                        return Err(Error::PageSizeNotSupported(pte.level().leaf_page_size()));
+                    }
+                    continue;
+                }
+                _ => {
+                    return Err(Error::PageNotMapped);
+                }
+            }
+        }
+        for addr in base.iter_from().take(num_pages as usize) {
+            // Unwrap okay -- we verified there were no unmapped PTEs above.
+            let pte = inner.get_mapped_4k_leaf(addr).unwrap();
+            // First Stage page tables do not have an Invalidated State. Clear the pte directly.
+            pte.pte.clear();
+        }
+        Ok(())
+    }
 }
 
 /// A range of mapped address space that has been locked for mapping. The PTEs are unlocked when
