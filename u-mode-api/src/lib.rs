@@ -196,6 +196,7 @@ impl UmodeRequest {
         self.op
     }
 
+    /// Returns a readable slice for request's input.
     pub fn input(&self) -> Option<&[u8]> {
         if let Some(addr) = self.in_addr {
             // Safety: we trust the hypervisor to have mapped at `in_addr` `in_len` bytes, and that the
@@ -211,6 +212,7 @@ impl UmodeRequest {
         }
     }
 
+    /// Returns a writable slice for request's output.
     pub fn output(&self) -> Option<&mut [u8]> {
         if let Some(addr) = self.out_addr {
             // Safety: we trust the hypervisor to have mapped at `out_addr` `out_len` bytes valid

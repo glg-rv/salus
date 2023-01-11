@@ -807,8 +807,7 @@ impl<T: FirstStagePagingMode> FirstStagePageTable<T> {
         for addr in base.iter_from().take(num_pages as usize) {
             // Skip over unmapped PTEs -- we verified there were no locked PTEs
             // above.
-            let mut pte = inner.get_mapped_4k_leaf(addr)?;
-            let paddr = pte.page_addr();
+            let pte = inner.get_mapped_4k_leaf(addr)?;
             // First Stage page table do not have an Invalidated State. Clear the LeafPte directly.
             pte.pte.clear();
         }

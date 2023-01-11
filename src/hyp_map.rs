@@ -9,14 +9,12 @@ use arrayvec::ArrayVec;
 use page_tracking::{HwMemMap, HwMemRegion, HwMemRegionType, HwReservedMemType, HypPageAlloc};
 use riscv_elf::{ElfMap, ElfSegment, ElfSegmentPerms};
 use riscv_page_tables::{
-    FirstStageMapper, FirstStagePageTable, PagingMode, PteFieldBits, PteLeafPerms, Sv48,
+    tlb::sfence_vma, FirstStagePageTable, PagingMode, PteFieldBits, PteLeafPerms, Sv48,
 };
 use riscv_pages::{
     InternalClean, Page, PageAddr, PageSize, RawAddr, SeqPageIter, SupervisorPhys, SupervisorVirt,
 };
 use riscv_regs::{satp, LocalRegisterCopy, SatpHelpers};
-
-use s_mode_utils::print::*;
 
 // Maximum number of regions unique to every pagetable (private).
 const MAX_PRIVATE_REGIONS: usize = 32;
@@ -35,8 +33,6 @@ pub enum Error {
     ElfUnalignedSegment,
     /// U-mode ELF segment is not in U-mode VA area.
     ElfInvalidAddress,
-    /// An address range causes overflow.
-    AddressOverflow,
     /// Invalid U-mode Slot Number
     InvalidSlot,
     /// Not enough space on the U-mode map area.
@@ -148,8 +144,6 @@ const UMODE_MAPPING_SLOTS: u64 = 2;
 const UMODE_MAPPINGS_START: u64 = UMODE_VA_END + 4 * 1024 * 1024;
 // Maximum size of the private mappings area.
 const UMODE_MAPPINGS_SIZE: u64 = UMODE_MAPPING_SLOTS * UMODE_MAPPING_SLOT_SIZE;
-// End of the private mappings area.
-const UMODE_MAPPINGS_END: u64 = UMODE_MAPPINGS_START + UMODE_MAPPINGS_SIZE;
 
 // Returns true if `addr` is contained in the U-mode VA area.
 fn is_umode_addr(addr: u64) -> bool {
@@ -309,29 +303,13 @@ impl HypPageTable {
         }
         Ok(vaddr)
     }
-    pub fn map_umode_slot_readonly(
-        &mut self,
-        slot: u64,
-        pages: &PinnedPages,
-    ) -> Result<PageAddr<SupervisorVirt>, Error> {
-        self.map_umode_slot(slot, pages, false)
-    }
-
-    pub fn map_umode_slot_writable(
-        &mut self,
-        slot: u64,
-        pages: &PinnedPages,
-    ) -> Result<PageAddr<SupervisorVirt>, Error> {
-        self.map_umode_slot(slot, pages, true)
-    }
-
     pub fn unmap_umode_slot(&self, slot: u64, num_pages: u64) -> Result<(), Error> {
         let vaddr = Self::umode_slot_va(slot)?;
         // Ignore unmapped addresses of pages.
-        let _ = self
-            .sv48
+        self.sv48
             .unmap_range(vaddr, PageSize::Size4k, num_pages)
             .map_err(|_| Error::UnmapFailed)?;
+        sfence_vma(None, None);
         Ok(())
     }
 }
@@ -402,15 +380,9 @@ impl UmodeMapping {
     pub fn vaddr(&self) -> PageAddr<SupervisorVirt> {
         self.vaddr
     }
-    pub fn new_writable(slot: u64, pages: PinnedPages) -> Result<Self, Error> {
+    pub fn new(slot: u64, pages: PinnedPages, writable: bool) -> Result<Self, Error> {
         let mut page_table = PerCpu::this_cpu().page_table_mut();
-        let vaddr = page_table.map_umode_slot_readonly(slot, &pages)?;
-        Ok(UmodeMapping { slot, vaddr, pages })
-    }
-
-    pub fn new_readonly(slot: u64, pages: PinnedPages) -> Result<Self, Error> {
-        let mut page_table = PerCpu::this_cpu().page_table_mut();
-        let vaddr = page_table.map_umode_slot_writable(slot, &pages)?;
+        let vaddr = page_table.map_umode_slot(slot, &pages, writable)?;
         Ok(UmodeMapping { slot, vaddr, pages })
     }
 }

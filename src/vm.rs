@@ -21,8 +21,7 @@ use crate::umode::UmodeTask;
 use crate::vm_cpu::{ActiveVmCpu, VmCpu, VmCpuParent, VmCpuStatus, VmCpuTrap, VmCpus, VM_CPUS_MAX};
 use crate::vm_pages::Error as VmPagesError;
 use crate::vm_pages::{
-    ActiveVmPages, AnyVmPages, InstructionFetchError, PageFaultType, PinnedPages, VmPages,
-    VmPagesRef,
+    ActiveVmPages, AnyVmPages, InstructionFetchError, PageFaultType, VmPages, VmPagesRef,
 };
 
 #[derive(Debug)]
@@ -1500,6 +1499,7 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         slot: u64,
         addr: u64,
         len: u64,
+        writable: bool,
     ) -> EcallResult<(u64, UmodeMapping)> {
         let base = PageSize::Size4k.round_down(addr);
         let end = addr
@@ -1512,20 +1512,10 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 PageSize::num_4k_pages(end - base),
             )
             .map_err(EcallError::from)?;
-        let mapping = UmodeMapping::new_readonly(slot, pages)
+        let mapping = UmodeMapping::new(slot, pages, writable)
             .map_err(|_| EcallError::Sbi(SbiError::Failed))?;
         let vaddr = mapping.vaddr().bits() + (addr - base);
         Ok((vaddr, mapping))
-    }
-    fn pin_guest_range(&self, addr: u64, len: u64) -> EcallResult<PinnedPages> {
-        let base = PageSize::Size4k.round_down(addr);
-        let base_addr = self.guest_addr_from_raw(base)?;
-        let end = addr
-            .checked_add(len)
-            .ok_or(EcallError::Sbi(SbiError::Failed))?;
-        self.vm_pages()
-            .pin_shared_pages(base_addr, PageSize::num_4k_pages(end - base))
-            .map_err(EcallError::from)
     }
 
     fn guest_test_memcopy(&self, to: u64, from: u64, len: u64) -> EcallResult<u64> {
@@ -1540,11 +1530,12 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
             );
             return Err(EcallError::Sbi(SbiError::InvalidParam));
         }
-        let (from_vaddr, from_mapping) = self.map_guest_range_in_umode_slot(0, from, len)?;
-        let (to_vaddr, to_mapping) = self.map_guest_range_in_umode_slot(1, to, len)?;
+        let (from_vaddr, _from_mapping) =
+            self.map_guest_range_in_umode_slot(0, from, len, false)?;
+        let (to_vaddr, _to_mapping) = self.map_guest_range_in_umode_slot(1, to, len, false)?;
         // Safe because we checked that the two ranges do not overlap.
         let request = unsafe { u_mode_api::UmodeRequest::memcopy(to_vaddr, from_vaddr, len) };
-        UmodeTask::send_req(request).unwrap();
+        UmodeTask::send_req(request).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
         Ok(0)
     }
 

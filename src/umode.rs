@@ -2,9 +2,7 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::hyp_map::Error as HypMapError;
 use crate::smp::PerCpu;
-use crate::vm_pages::PinnedPages;
 
 use core::arch::global_asm;
 use core::fmt;
@@ -12,8 +10,6 @@ use core::mem::size_of;
 use core::ops::ControlFlow;
 use memoffset::offset_of;
 use riscv_elf::ElfMap;
-use riscv_page_tables::{PteFieldBits, PteLeafPerms};
-use riscv_pages::{PageAddr, SupervisorVirt};
 use riscv_regs::{Exception::UserEnvCall, GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
 use s_mode_utils::print::*;
 use spin::Once;
@@ -239,8 +235,6 @@ pub enum Error {
     Panic,
     /// Error in umode.
     Umode(UmodeApiError),
-    /// Mapping Error.
-    MappingError(HypMapError),
 }
 
 // Entry for umode task.
@@ -338,6 +332,7 @@ impl UmodeTask {
                     ControlFlow::Break(res) => break res,
                 },
                 _ => {
+                    println!("Unexpected U-mode Trap:");
                     println!("{}", self.arch);
                     break Err(Error::UnexpectedTrap);
                 }
