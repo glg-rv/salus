@@ -418,7 +418,6 @@ impl UmodeMapping {
 // On drop, UmodeMapping will first unmap the pages, then unpin them (through PinnedPages drop).
 impl Drop for UmodeMapping {
     fn drop(&mut self) {
-        println!("UNMAPPING SLOT {:?}", self.slot);
         let page_table = PerCpu::this_cpu().page_table();
         // Unwrap okay: on construction slot was mapped, and the unmap must succeed.
         page_table
