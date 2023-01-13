@@ -13,7 +13,7 @@ use riscv_page_tables::{GuestStagePageTable, GuestStagePagingMode};
 use riscv_pages::*;
 use riscv_regs::{DecodedInstruction, Exception, GprIndex, Instruction, Interrupt, Trap};
 use s_mode_utils::print::*;
-use sbi_rs::{Error as SbiError, *};
+use sbi_rs::{salus::*, Error as SbiError, *};
 
 use crate::guest_tracking::{GuestStateGuard, GuestVm, Guests};
 use crate::vm_cpu::{ActiveVmCpu, VmCpu, VmCpuParent, VmCpuStatus, VmCpuTrap, VmCpus, VM_CPUS_MAX};
@@ -724,6 +724,15 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 self.handle_attestation_msg(attestation_func, active_vcpu.active_pages())
             }
             SbiMessage::Pmu(pmu_func) => self.handle_pmu_msg(pmu_func, active_vcpu).into(),
+            SbiMessage::Vendor(regs) => self.handle_vendor_msg(&regs).into(),
+        }
+    }
+
+    fn handle_vendor_msg(&self, regs: &[u64]) -> EcallResult<u64> {
+        let vendor_msg = SalusSbiMessage::from_regs(regs)
+            .map_err(|_| EcallError::Sbi(SbiError::NotSupported))?;
+        match vendor_msg {
+            SalusSbiMessage::SalusTest(_) => Err(EcallError::Sbi(SbiError::Failed)),
         }
     }
 
