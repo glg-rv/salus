@@ -780,6 +780,7 @@ name = "umode"
 version = "0.1.0"
 dependencies = [
  "libuser",
+ "rice",
  "u_mode_api",
 ]
 

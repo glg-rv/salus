@@ -147,6 +147,14 @@ const UMODE_MAPPINGS_START: u64 = UMODE_VA_END + 4 * 1024 * 1024;
 // Maximum size of the private mappings area.
 const UMODE_MAPPINGS_SIZE: u64 = UMODE_MAPPING_SLOTS * UMODE_MAPPING_SLOT_SIZE;
 
+// The U-mode buffer is a private area of the page table (mapped in
+// U-mode) used by the hypervisor to pass data to/from the current
+// U-mode operation. This avoids mapping hypervisor data directly in
+// U-mode. The area is cleared after use.
+const UMODE_BUFFER_START: u64 = UMODE_MAPPING_END + 4 * 1024 * 1024;
+const UMODE_BUFFER_SIZE: u64 = 16 * 1024;
+const UMODE_BUFFER_END: u64 = UMODE_BUFFER_START + UMODE_BUFFER_END;
+
 // Returns true if `addr` is contained in the U-mode VA area.
 fn is_umode_addr(addr: u64) -> bool {
     (UMODE_VA_START..UMODE_VA_END).contains(&addr)

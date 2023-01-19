@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 libuser = { path = "../libuser" }
 u_mode_api = { path = "../u-mode-api" }
+rice = { git = "https://github.com/rivosinc/rice" }
