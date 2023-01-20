@@ -395,11 +395,20 @@ impl HypMap {
             .regions()
             .filter_map(SharedRegion::from_hw_mem_region)
             .collect();
-        // All private mappings come from the U-mode ELF.
-        let private_regions = umode_elf
+        // Add private mappings that come from the U-mode ELF.
+        let mut private_regions: PrivateRegionsVec = umode_elf
             .segments()
             .map(PrivateRegion::from_umode_elf_segment)
             .collect::<Result<_, _>>()?;
+        // Add U-mode buffer region as user writable.
+        // Unwrap okay: the result is dependent on constant that must be page aligned.
+        let umode_buffer_start =
+            PageAddr::new(RawAddr::supervisor_virt(UMODE_BUFFER_START)).unwrap();
+        private_regions.push(PrivateRegion::new_fixed_region(
+            umode_buffer_start,
+            UMODE_BUFFER_SIZE as usize,
+            PteLeafPerms::URW,
+        ));
         let hypmap = HypMap {
             shared_regions,
             private_regions,
