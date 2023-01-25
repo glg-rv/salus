@@ -50,18 +50,21 @@
 pub enum Error {
     /// Generic failure in execution.
     Failed = 1,
+    /// Invalid arguments passed.
+    InvalidArgument = 2,
     /// Ecall not supported. From hypervisor to umode.
-    EcallNotSupported = 2,
+    EcallNotSupported = 3,
     /// Request not supported. From umode to hypervisor.
-    RequestNotSupported = 3,
+    RequestNotSupported = 4,
 }
 
 impl From<u64> for Error {
     fn from(val: u64) -> Error {
         match val {
             1 => Error::Failed,
-            2 => Error::EcallNotSupported,
-            3 => Error::RequestNotSupported,
+            2 => Error::InvalidArgument,
+            3 => Error::EcallNotSupported,
+            4 => Error::RequestNotSupported,
             _ => Error::Failed,
         }
     }
@@ -122,6 +125,8 @@ pub enum UmodeOp {
     Nop = 1,
     /// Say hello.
     Hello = 2,
+    /// Copy memory from input to output.
+    MemCopy = 3,
 }
 
 impl TryFrom<u64> for UmodeOp {
@@ -131,6 +136,7 @@ impl TryFrom<u64> for UmodeOp {
         match reg {
             1 => Ok(UmodeOp::Nop),
             2 => Ok(UmodeOp::Hello),
+            3 => Ok(UmodeOp::MemCopy),
             _ => Err(Error::RequestNotSupported),
         }
     }
@@ -169,9 +175,56 @@ impl UmodeRequest {
         }
     }
 
+    /// Copy memory from input to output.
+    ///
+    /// Caller must ensure that:
+    /// 1. `in_addr` must be mapped readable for `len` bytes.
+    /// 2. `out_addr` must be mapped writable for `len` bytes.
+    /// 3. `in_addr` and `out_addr` ranges of `len` bytes must not overlap.
+    pub fn memcopy(out_addr: u64, in_addr: u64, len: u64) -> UmodeRequest {
+        UmodeRequest {
+            op: UmodeOp::MemCopy,
+            in_addr: Some(in_addr),
+            in_len: len as usize,
+            out_addr: Some(out_addr),
+            out_len: len as usize,
+        }
+    }
+
     /// Returns the requested Operation.
     pub fn op(&self) -> UmodeOp {
         self.op
+    }
+
+    /// Returns a readable slice for request's input.
+    pub fn input(&self) -> Option<&[u8]> {
+        if let Some(addr) = self.in_addr {
+            // Safety: we trust the hypervisor to have mapped at `in_addr` `in_len` bytes for reading.
+            unsafe {
+                Some(&*core::ptr::slice_from_raw_parts(
+                    addr as *const u8,
+                    self.in_len,
+                ))
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Returns a writable slice for request's output.
+    pub fn output(&self) -> Option<&mut [u8]> {
+        if let Some(addr) = self.out_addr {
+            // Safety: we trust the hypervisor to have mapped at `out_addr` `out_len` bytes valid
+            // for reading and writing.
+            unsafe {
+                Some(&mut *core::ptr::slice_from_raw_parts_mut(
+                    addr as *mut u8,
+                    self.out_len,
+                ))
+            }
+        } else {
+            None
+        }
     }
 }
 
