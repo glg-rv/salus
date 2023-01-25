@@ -13,13 +13,15 @@ use riscv_page_tables::{GuestStagePageTable, GuestStagePagingMode};
 use riscv_pages::*;
 use riscv_regs::{DecodedInstruction, Exception, GprIndex, Instruction, Interrupt, Trap};
 use s_mode_utils::print::*;
-use sbi_rs::{Error as SbiError, *};
+use sbi_rs::{salus::*, Error as SbiError, *};
 
 use crate::guest_tracking::{GuestStateGuard, GuestVm, Guests};
+use crate::umode::UmodeTask;
 use crate::vm_cpu::{ActiveVmCpu, VmCpu, VmCpuParent, VmCpuStatus, VmCpuTrap, VmCpus, VM_CPUS_MAX};
 use crate::vm_pages::Error as VmPagesError;
 use crate::vm_pages::{
-    ActiveVmPages, AnyVmPages, InstructionFetchError, PageFaultType, VmPages, VmPagesRef,
+    ActiveVmPages, AnyVmPages, GuestUmodeMapping, InstructionFetchError, PageFaultType, VmPages,
+    VmPagesRef,
 };
 
 #[derive(Debug)]
@@ -724,7 +726,21 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                 self.handle_attestation_msg(attestation_func, active_vcpu.active_pages())
             }
             SbiMessage::Pmu(pmu_func) => self.handle_pmu_msg(pmu_func, active_vcpu).into(),
-            SbiMessage::Vendor(_) => EcallAction::Unhandled,
+            SbiMessage::Vendor(regs) => self.handle_vendor_msg(&regs, active_vcpu).into(),
+        }
+    }
+
+    fn handle_vendor_msg(
+        &self,
+        regs: &[u64],
+        active_vcpu: &mut ActiveVmCpu<T>,
+    ) -> EcallResult<u64> {
+        let vendor_msg = SalusSbiMessage::from_regs(regs)
+            .map_err(|_| EcallError::Sbi(SbiError::NotSupported))?;
+        match vendor_msg {
+            SalusSbiMessage::SalusTest(test_function) => {
+                self.handle_salus_test(test_function, active_vcpu.active_pages())
+            }
         }
     }
 
@@ -1477,6 +1493,56 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
             .vm_pages()
             .initiate_fence()
             .map_err(EcallError::from)?;
+        Ok(0)
+    }
+
+    fn handle_salus_test(
+        &self,
+        test_func: SalusTestFunction,
+        _active_pages: &ActiveVmPages<T>,
+    ) -> EcallResult<u64> {
+        use SalusTestFunction::*;
+        match test_func {
+            MemCopy(args) => self.guest_test_memcopy(args.to, args.from, args.len),
+        }
+    }
+
+    fn map_guest_range_in_umode_slot(
+        &self,
+        slot: u64,
+        addr: u64,
+        len: u64,
+        writable: bool,
+    ) -> EcallResult<(u64, GuestUmodeMapping)> {
+        let base = PageSize::Size4k.round_down(addr);
+        let end = addr
+            .checked_add(len)
+            .ok_or(EcallError::Sbi(SbiError::InvalidParam))?;
+        let umode_mapping = self
+            .vm_pages()
+            .map_in_umode_slot(
+                slot,
+                self.guest_addr_from_raw(base)?,
+                PageSize::num_4k_pages(end - base),
+                writable,
+            )
+            .map_err(EcallError::from)?;
+        let vaddr = umode_mapping.vaddr().bits() + (addr - base);
+        Ok((vaddr, umode_mapping))
+    }
+
+    fn guest_test_memcopy(&self, to: u64, from: u64, len: u64) -> EcallResult<u64> {
+        let overlap = core::cmp::max(to, from) <= core::cmp::min(to + len - 1, from + len - 1);
+        if overlap {
+            return Err(EcallError::Sbi(SbiError::InvalidParam));
+        }
+        let (from_vaddr, _from_mapping) =
+            self.map_guest_range_in_umode_slot(0, from, len, false)?;
+        let (to_vaddr, _to_mapping) = self.map_guest_range_in_umode_slot(1, to, len, true)?;
+        // The two ranges do not overlap, and we mapped them for at least `len` bytes, `to_vaddr`
+        // writable and `from_vaddr` readable.
+        let request = u_mode_api::UmodeRequest::memcopy(to_vaddr, from_vaddr, len);
+        UmodeTask::send_req(request).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
         Ok(0)
     }
 
