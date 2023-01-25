@@ -8,7 +8,15 @@
 extern crate libuser;
 
 use libuser::*;
-use u_mode_api::UmodeOp;
+use u_mode_api::{Error as UmodeApiError, UmodeOp, UmodeRequest};
+
+fn op_memcopy(req: &UmodeRequest) -> Result<(), UmodeApiError> {
+    let input = req.input().ok_or(UmodeApiError::InvalidArgument)?;
+    let output = req.output().ok_or(UmodeApiError::InvalidArgument)?;
+    let len = core::cmp::min(input.len(), output.len());
+    output[0..len].copy_from_slice(&input[0..len]);
+    Ok(())
+}
 
 #[no_mangle]
 extern "C" fn task_main(cpuid: u64) -> ! {
@@ -34,6 +42,7 @@ extern "C" fn task_main(cpuid: u64) -> ! {
                     println!("----------------------------");
                     Ok(())
                 }
+                UmodeOp::MemCopy => op_memcopy(&req),
             },
             Err(err) => Err(err),
         };
