@@ -20,6 +20,8 @@ use riscv_regs::{
 };
 use spin::{Mutex, Once, RwLock, RwLockReadGuard};
 
+use crate::hyp_map::Error as HypMapError;
+use crate::smp::PerCpu;
 use crate::vm::{VmStateAny, VmStateFinalized, VmStateInitializing};
 use crate::vm_id::VmId;
 
@@ -50,6 +52,7 @@ pub enum Error {
     MsiTableMapping(IommuError),
     AttachingDevice(IommuError),
     PageTracker(PageTrackingError),
+    HypMap(HypMapError),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -232,6 +235,61 @@ impl Drop for PinnedPages {
                 .release_page_by_addr(addr, self.owner)
                 .unwrap();
         }
+    }
+}
+
+/// A reference to a U-mode slot in the current page-table that is mapped with VM pages in the
+/// shared state. On drop(), the shared reference count is dropped and the slot unmapped.
+pub struct GuestUmodeMapping {
+    slot: u64,
+    num_pages: u64,
+    page_tracker: PageTracker,
+    owner: PageOwnerId,
+}
+
+impl GuestUmodeMapping {
+    // Safety: the caller must guarantee that the slot is valid, and
+    // that it maps `num_pages` pages owned by `owner` in state "Shared".
+    unsafe fn new(
+        slot: u64,
+        num_pages: u64,
+        page_tracker: PageTracker,
+        owner: PageOwnerId,
+    ) -> Self {
+        Self {
+            slot,
+            num_pages,
+            page_tracker,
+            owner,
+        }
+    }
+
+    /// Returns the start of the mapping (i.e., the address of the mapped U-mode slot).
+    pub fn vaddr(&self) -> PageAddr<SupervisorVirt> {
+        // Unwrap okay: `self.slot` guaranteed to be valid.
+        PerCpu::this_cpu()
+            .page_table()
+            .umode_slot_va(self.slot)
+            .unwrap()
+    }
+}
+
+impl Drop for GuestUmodeMapping {
+    fn drop(&mut self) {
+        // Unwrap okay: the caller guaranteed at construction that slot is mapped with `num_pages` pages.
+        let unmapped = PerCpu::this_cpu()
+            .page_table()
+            .unmap_umode_slot(self.slot, self.num_pages)
+            .unwrap();
+        for addr in unmapped {
+            // Unwrap ok: the caller guaranteed at construction that the mapped pages are shared and
+            // owned by `self.owner`.
+            self.page_tracker
+                .release_page_by_addr(addr, self.owner)
+                .unwrap();
+        }
+        // Unmapped pages in current CPU. Flush TLBs.
+        tlb::sfence_vma(None, None);
     }
 }
 
@@ -1747,6 +1805,51 @@ impl<'a, T: GuestStagePagingMode> FinalizedVmPages<'a, T> {
             )
         };
         Ok(pin)
+    }
+
+    ///  Pins `count` pages starting at `page_addr` as shared pages, and maps them in a U-mode
+    /// slot. Returns a `GuestUmodeMapping` structure that will unmap and release the pin when
+    /// dropped. Used to share memory between a VM and U-mode.
+    pub fn map_in_umode_slot(
+        &self,
+        slot: u64,
+        page_addr: GuestPageAddr,
+        count: u64,
+        writable: bool,
+    ) -> Result<GuestUmodeMapping> {
+        let pages = self.get_shareable_pages(page_addr, count)?;
+        let mapper = PerCpu::this_cpu()
+            .page_table()
+            .umode_slot_mapper(slot, count, writable)
+            .map_err(Error::HypMap)?;
+        let to_page_addr = mapper.vaddr();
+
+        for (page, virt) in pages.zip(to_page_addr.iter_from()) {
+            let phys = page.addr();
+            // Unwrap ok: The page is guaranteed to be in a shareable state until the iterator is
+            // destroyed.
+            self.inner
+                .page_tracker
+                .share_page(page, self.inner.page_owner_id)
+                .unwrap();
+
+            // Safety: pages are guest-owned and marked as shared
+            unsafe {
+                // Unwrap okay: Address is in range and it is not mapped.
+                mapper.map_addr(virt, phys).unwrap();
+            }
+        }
+
+        // Safety: slot is valid and mapped with pages owned by current VM.
+        let umode_mapping = unsafe {
+            GuestUmodeMapping::new(
+                slot,
+                count,
+                self.inner.page_tracker.clone(),
+                self.inner.page_owner_id,
+            )
+        };
+        Ok(umode_mapping)
     }
 
     /// Activates the address space represented by this `VmPages`. The reference to the address space
