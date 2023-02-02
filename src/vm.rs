@@ -1507,6 +1507,12 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         use SalusTestFunction::*;
         match test_func {
             MemCopy(args) => self.guest_test_memcopy(args.to, args.from, args.len),
+            GetEvidence(args) => self.guest_test_get_evidence(args.cert_request_addr,
+                                                              args.cert_request_size,
+                                                              args.request_data_addr,
+                                                              args.evidence_format,
+                                                              args.cert_addr_out,
+                                                              args.cert_size),
         }
     }
 
@@ -1545,6 +1551,19 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
             .ok_or(EcallError::Sbi(SbiError::InvalidParam))?;
         UmodeTask::send_req(request).map_err(|_| EcallError::Sbi(SbiError::Failed))?;
         Ok(0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn guest_test_get_evidence(
+        &self,
+        csr_raw_addr: u64,
+        csr_size: u64,
+        _request_data_addr: u64,
+        _evidence_format: u64,
+        certout_raw_addr: u64,
+        certout_size: u64,
+    ) -> EcallResult<u64> {
+        Err(EcallError::Sbi(SbiError::InvalidParam))
     }
 
     fn handle_attestation_msg(

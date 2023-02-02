@@ -59,6 +59,7 @@ extern "C" fn task_main(cpuid: u64) -> ! {
                     Ok(())
                 }
                 UmodeOp::MemCopy => op_memcopy(&req),
+                UmodeOp::GetEvidence => Err(UmodeApiError::InvalidArgument),
             },
             Err(err) => Err(err),
         };

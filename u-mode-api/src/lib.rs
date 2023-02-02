@@ -127,6 +127,8 @@ pub enum UmodeOp {
     Hello = 2,
     /// Copy memory from input to output.
     MemCopy = 3,
+    /// Get attestation evidence from a Certificate Signing Request (CSR)
+    GetEvidence = 4,
 }
 
 impl TryFrom<u64> for UmodeOp {
@@ -137,6 +139,7 @@ impl TryFrom<u64> for UmodeOp {
             1 => Ok(UmodeOp::Nop),
             2 => Ok(UmodeOp::Hello),
             3 => Ok(UmodeOp::MemCopy),
+            4 => Ok(UmodeOp::GetEvidence),
             _ => Err(Error::RequestNotSupported),
         }
     }
@@ -147,14 +150,18 @@ impl TryFrom<u64> for UmodeOp {
 pub struct UmodeRequest {
     /// The operation requested.
     pub op: UmodeOp,
-    /// Optional start of mapped area accessible as read-only.
+    /// Optional start of mapped area accessible as read-only. Specifies call-specific input.
     pub in_addr: Option<u64>,
-    /// If in_addr is valid, length of the area acessible as read-only.
+    /// If in_addr is valid, length of the area accessible as read-only.
     pub in_len: usize,
-    /// Optional start of mapped area accessible as read-write.
+    /// Optional start of mapped area accessible as read-write. Specifies call-specific output.
     pub out_addr: Option<u64>,
-    /// If in_addr is valid, length of the area acessible as read-write.
+    /// If in_addr is valid, length of the area accessible as read-write.
     pub out_len: usize,
+    /// Optional start of mapped area accessible as read-only. Specifies hypervisor state data.
+    pub state_addr: Option<u64>,
+    /// if state_addr is valid, length of the area accessible as read-only.
+    pub state_len: usize,
 }
 
 impl UmodeRequest {
@@ -166,6 +173,8 @@ impl UmodeRequest {
             in_len: 0,
             out_addr: None,
             out_len: 0,
+            state_addr: None,
+            state_len: 0,
         }
     }
 
@@ -177,6 +186,8 @@ impl UmodeRequest {
             in_len: 0,
             out_addr: None,
             out_len: 0,
+            state_addr: None,
+            state_len: 0,
         }
     }
 
@@ -198,7 +209,31 @@ impl UmodeRequest {
                 in_len: len as usize,
                 out_addr: Some(out_addr),
                 out_len: len as usize,
+                state_addr: None,
+                state_len: 0,
             })
+        }
+    }
+
+    /// Get Evidence.
+    ///
+    /// Create a signed certificate from the CSR and the DICE layer state.
+    pub fn get_evidence(
+        csr_addr: u64,
+        csr_len: u64,
+        certout_addr: u64,
+        certout_len: u64,
+        layer_state_addr: u64,
+        layer_state_len: u64,
+    ) -> UmodeRequest {
+        UmodeRequest {
+            op: UmodeOp::GetEvidence,
+            in_addr: Some(csr_addr),
+            in_len: csr_len as usize,
+            out_addr: Some(certout_addr),
+            out_len: certout_len as usize,
+            state_addr: Some(layer_state_addr),
+            state_len: layer_state_len as usize,
         }
     }
 }
@@ -211,6 +246,8 @@ impl TryIntoRegisters for UmodeRequest {
             in_len: regs[2] as usize,
             out_addr: if regs[3] == 0 { None } else { Some(regs[3]) },
             out_len: regs[4] as usize,
+            state_addr: if regs[5] == 0 { None } else { Some(regs[5]) },
+            state_len: regs[6] as usize,
         };
         Ok(req)
     }
@@ -225,6 +262,12 @@ impl TryIntoRegisters for UmodeRequest {
             0
         };
         regs[4] = self.out_len as u64;
+        regs[5] = if let Some(val) = self.state_addr {
+            val
+        } else {
+            0
+        };
+        regs[6] = self.state_len as u64;
     }
 }
 
