@@ -44,6 +44,9 @@
 //! specified in the ELF file with register `A0` containing a unique
 //! u64 ID (the CPU ID).
 
+/// Shared-memory definitions for Attestation functions.
+pub mod attestation;
+
 /// The Error type returned returned from this library.
 #[derive(Debug, Clone, Copy)]
 #[repr(u64)]
