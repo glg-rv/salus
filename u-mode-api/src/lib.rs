@@ -16,7 +16,7 @@
 //! hypervisor for specific services or for signalling end of
 //! execution.
 //!
-//! There are two says to pass data between the two components:
+//! There are two ways to pass data between the two components:
 //! registers and memory.
 //!
 //! ## Passing Data through Registers.
@@ -153,54 +153,51 @@ impl TryFrom<u64> for UmodeOp {
 pub struct UmodeRequest {
     /// The operation requested.
     pub op: UmodeOp,
-    /// Optional start of mapped area accessible as read-only. Specifies call-specific input.
-    pub in_addr: Option<u64>,
-    /// If in_addr is valid, length of the area accessible as read-only.
-    pub in_len: usize,
-    /// Optional start of mapped area accessible as read-write. Specifies call-specific output.
-    pub out_addr: Option<u64>,
-    /// If in_addr is valid, length of the area accessible as read-write.
-    pub out_len: usize,
-    /// Optional start of mapped area accessible as read-only. Specifies hypervisor state data.
-    pub state_addr: Option<u64>,
-    /// if state_addr is valid, length of the area accessible as read-only.
-    pub state_len: usize,
+    /// Arguments of the operation.
+    pub args: [u64; 7],
 }
 
 impl UmodeRequest {
     /// A Nop request: do nothing.
+    ///
+    /// Arguments: none
+    /// U-mode Mapped Area: not used.
     pub fn nop() -> UmodeRequest {
         UmodeRequest {
             op: UmodeOp::Nop,
-            in_addr: None,
-            in_len: 0,
-            out_addr: None,
-            out_len: 0,
-            state_addr: None,
-            state_len: 0,
+            args: [0; 7],
         }
     }
 
-    /// Print String
-    pub fn print_string(addr: u64, len: u64) -> UmodeRequest {
+    /// Print String from U-mode Mapped Area
+    ///
+    /// Arguments:
+    ///    [0] = length of data in the U-mode Mapped Area to be printed.
+    ///
+    /// U-mode Mapped Area:
+    ///    Contains the data to be printed at the beginning of the area.
+    pub fn print_string(len: usize) -> UmodeRequest {
         UmodeRequest {
             op: UmodeOp::PrintString,
-            in_addr: Some(addr),
-            in_len: len as usize,
-            out_addr: None,
-            out_len: 0,
-            state_addr: None,
-            state_len: 0,
+            args: [len as u64, 0, 0, 0, 0, 0, 0],
         }
     }
 
     /// Copy memory from input to output.
     ///
+    /// Arguments:
+    ///    [0] = starting address of output
+    ///    [1] = starting address of input
+    ///    [2] = length of input and output
+    ///
+    /// U-mode Mapped Area: Not used.
+    ///
     /// Caller must guarantee that:
     /// 1. `in_addr` must be mapped user readable for `len` bytes.
     /// 2. `out_addr` must be mapped user writable for `len` bytes.
     pub fn memcopy(out_addr: u64, in_addr: u64, len: u64) -> Option<UmodeRequest> {
-        // Check that input and output ranges do not overlap.
+        // This test call is special because the guest memory in input/output will be used directly
+        // by U-mode. Check that input and output ranges do not overlap.
         let overlap = core::cmp::max(out_addr, in_addr)
             <= core::cmp::min(out_addr + len - 1, in_addr + len - 1);
         if overlap {
@@ -208,69 +205,56 @@ impl UmodeRequest {
         } else {
             Some(UmodeRequest {
                 op: UmodeOp::MemCopy,
-                in_addr: Some(in_addr),
-                in_len: len as usize,
-                out_addr: Some(out_addr),
-                out_len: len as usize,
-                state_addr: None,
-                state_len: 0,
+                args: [out_addr, in_addr, len, 0, 0, 0, 0],
             })
         }
     }
 
-    /// Get Evidence.
+    /// Create a signed certificate from the CSR and the DICE layer measurements.
     ///
-    /// Create a signed certificate from the CSR and the DICE layer state.
+    /// Arguments:
+    ///    [0] = address of the Certificate Signing Request.
+    ///    [1] = length of the Certificate Signing Request.
+    ///    [2] = address where the output Certificate will be written.
+    ///    [3] = length of the area available for the output Certificate .
+    ///
+    /// U-mode Mapped Area:
+    ///    Contains a structure of type `GetSha384Certificate`
     pub fn get_evidence(
         csr_addr: u64,
-        csr_len: u64,
+        csr_len: usize,
         certout_addr: u64,
-        certout_len: u64,
-        layer_state_addr: u64,
-        layer_state_len: u64,
+        certout_len: usize,
     ) -> UmodeRequest {
         UmodeRequest {
             op: UmodeOp::GetEvidence,
-            in_addr: Some(csr_addr),
-            in_len: csr_len as usize,
-            out_addr: Some(certout_addr),
-            out_len: certout_len as usize,
-            state_addr: Some(layer_state_addr),
-            state_len: layer_state_len as usize,
+            args: [
+                csr_addr,
+                csr_len as u64,
+                certout_addr,
+                certout_len as u64,
+                0,
+                0,
+                0,
+            ],
         }
     }
 }
 
 impl TryIntoRegisters for UmodeRequest {
     fn try_from_registers(regs: &[u64]) -> Result<UmodeRequest, Error> {
+        let mut args = [0; 7];
+        args.as_mut_slice().copy_from_slice(&regs[1..8]);
         let req = UmodeRequest {
             op: UmodeOp::try_from(regs[0])?,
-            in_addr: if regs[1] == 0 { None } else { Some(regs[1]) },
-            in_len: regs[2] as usize,
-            out_addr: if regs[3] == 0 { None } else { Some(regs[3]) },
-            out_len: regs[4] as usize,
-            state_addr: if regs[5] == 0 { None } else { Some(regs[5]) },
-            state_len: regs[6] as usize,
+            args,
         };
         Ok(req)
     }
 
     fn to_registers(&self, regs: &mut [u64]) {
         regs[0] = self.op as u64;
-        regs[1] = if let Some(val) = self.in_addr { val } else { 0 };
-        regs[2] = self.in_len as u64;
-        regs[3] = if let Some(val) = self.out_addr {
-            val
-        } else {
-            0
-        };
-        regs[4] = self.out_len as u64;
-        regs[5] = if let Some(val) = self.state_addr {
-            val
-        } else {
-            0
-        };
-        regs[6] = self.state_len as u64;
+        regs[1..8].copy_from_slice(self.args.as_slice())
     }
 }
 

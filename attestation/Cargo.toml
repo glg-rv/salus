@@ -21,3 +21,4 @@ sbi_rs = { path = "../sbi-rs" }
 spin = { version = "*", default-features = false, features = ["rwlock"] }
 spki = "0.6.0"
 typenum = "1.15.0"
+u_mode_api = { path = "../u-mode-api" }

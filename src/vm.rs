@@ -1507,12 +1507,14 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         use SalusTestFunction::*;
         match test_func {
             MemCopy(args) => self.guest_test_memcopy(args.to, args.from, args.len),
-            GetEvidence(args) => self.guest_test_get_evidence(args.cert_request_addr,
-                                                              args.cert_request_size,
-                                                              args.request_data_addr,
-                                                              args.evidence_format,
-                                                              args.cert_addr_out,
-                                                              args.cert_size),
+            GetEvidence(args) => self.guest_test_get_evidence(
+                args.cert_request_addr,
+                args.cert_request_size,
+                args.request_data_addr,
+                args.evidence_format,
+                args.cert_addr_out,
+                args.cert_size,
+            ),
         }
     }
 
@@ -1563,6 +1565,16 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         certout_raw_addr: u64,
         certout_size: u64,
     ) -> EcallResult<u64> {
+        // Map CSR read-only.
+        let (csr_vaddr, _csr_mapping) =
+            self.map_guest_range_in_umode_slot(UmodeSlotId::A, csr_raw_addr, csr_size, false)?;
+        let (certout_vaddr, _certout_mapping) = self.map_guest_range_in_umode_slot(
+            UmodeSlotId::B,
+            certout_raw_addr,
+            certout_size,
+            true,
+        )?;
+        let measurement_registers = self.attestation_mgr().measurement_registers()?;
         Err(EcallError::Sbi(SbiError::InvalidParam))
     }
 

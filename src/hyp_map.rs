@@ -4,6 +4,7 @@
 
 use arrayvec::ArrayVec;
 use core::cell::{RefCell, RefMut};
+use data_model::{DataInit, VolatileMemory, VolatileMemoryError, VolatileSlice};
 use page_tracking::{HwMemMap, HwMemRegion, HwMemRegionType, HwReservedMemType, HypPageAlloc};
 use riscv_elf::{ElfMap, ElfSegment, ElfSegmentPerms};
 use riscv_page_tables::{
@@ -11,7 +12,7 @@ use riscv_page_tables::{
 };
 use riscv_pages::{
     InternalClean, Page, PageAddr, PageSize, RawAddr, SeqPageIter, SupervisorPageAddr,
-    SupervisorPhys, SupervisorPhysAddr, SupervisorVirt,
+    SupervisorPhys, SupervisorVirt,
 };
 use riscv_regs::{satp, sstatus, LocalRegisterCopy, ReadWriteable, SatpHelpers, CSR};
 use spin::Once;
@@ -148,7 +149,7 @@ const UMODE_MAPPINGS_END: u64 = UMODE_MAPPINGS_START + UMODE_MAPPINGS_SIZE;
 const_assert!(PageSize::Size4k.is_aligned(UMODE_MAPPINGS_END));
 
 /// Start of the U-mode buffer.
-const UMODE_BUFFER_START: u64 = UMODE_MAPPINGS_END + 4 * 1024 * 1024;
+pub const UMODE_BUFFER_START: u64 = UMODE_MAPPINGS_END + 4 * 1024 * 1024;
 const_assert!(PageSize::Size4k.is_aligned(UMODE_BUFFER_START));
 /// Size of the U-mode buffer.
 pub const UMODE_BUFFER_SIZE: u64 = 16 * 1024;
@@ -511,19 +512,29 @@ pub enum UmodeBufferError {
     /// Address overflow on increment.
     AddressOverflow,
     /// Buffer is full.
-    NoSpace,
+    NoSpace(VolatileMemoryError),
+    /// Attempt to write to non-cleared buffer.
+    InUse,
+    /// Attempt to clear an unused buffer.
+    NotInUse,
+}
+
+// Track buffer status. Be sure it's cleaned after each use.
+enum UmodeBufferStatus {
+    // Buffer is unused.
+    Empty,
+    // Buffer is used (parameter indicates the bytes written).
+    InUse(usize),
 }
 
 /// The U-mode buffer is a private area of the page table used by the hypervisor to pass data to the
 /// current U-mode operation. This avoids mapping hypervisor data directly in U-mode. This area is
 /// written by the hypervisor and mapped read-only in U-mode.
 pub struct UmodeBuffer {
-    /// The start address of the U-mode buffer memory.
-    start: SupervisorPageAddr,
-    /// Pointer to the unused part of the buffer.
-    addr: SupervisorPhysAddr,
-    /// End of buffer memory.
-    max_addr: SupervisorPageAddr,
+    /// Status of the U-mode buffer.
+    status: UmodeBufferStatus,
+    /// The buffer memory.
+    vslice: VolatileSlice<'static>,
 }
 
 impl UmodeBuffer {
@@ -533,8 +544,6 @@ impl UmodeBuffer {
         let num_pages = PageSize::num_4k_pages(UMODE_BUFFER_SIZE);
         let pages = hyp_mem.take_pages_for_hyp_state(num_pages as usize);
         let start = pages.base();
-        // Unwrap okay: we allocated num_pages already.
-        let max_addr = start.checked_add_pages(num_pages).unwrap();
 
         // Map the allocated pages as read-only in U-mode at UMODE_BUFFER_START.
         let vaddr = HypMap::umode_buffer_va();
@@ -560,47 +569,37 @@ impl UmodeBuffer {
                 mapper.map_addr(virt, phys, pte_fields).unwrap();
             }
         }
+        // Safety: the range `(start..max_addr)` is mapped in U-mode as read-only and was uniquely
+        // claimed for this buffer from the hypervisor map above.
+        let vslice = unsafe {
+            VolatileSlice::from_raw_parts(start.raw().bits() as *mut u8, UMODE_BUFFER_SIZE as usize)
+        };
         UmodeBuffer {
-            start,
-            addr: start.raw(),
-            max_addr,
+            status: UmodeBufferStatus::Empty,
+            vslice,
         }
     }
 
     /// Appends `data` in the current CPU's buffer. Returns the U-mode virtual address where `data`
     /// has been written.
-    pub fn append(&mut self, data: &[u8]) -> Result<RawAddr<SupervisorVirt>, UmodeBufferError> {
-        let end = self
-            .addr
-            .checked_increment(data.len() as u64)
-            .ok_or(UmodeBufferError::AddressOverflow)?;
-        if end >= self.max_addr.raw() {
-            return Err(UmodeBufferError::NoSpace);
+    pub fn store<T: DataInit>(
+        &mut self,
+        data: T,
+    ) -> Result<RawAddr<SupervisorVirt>, UmodeBufferError> {
+        match self.status {
+            UmodeBufferStatus::InUse(_) => Err(UmodeBufferError::InUse),
+            UmodeBufferStatus::Empty => {
+                let vref = self.vslice.get_ref(0).map_err(UmodeBufferError::NoSpace)?;
+                vref.store(data);
+                self.status = UmodeBufferStatus::InUse(core::mem::size_of::<T>());
+                Ok(HypMap::umode_buffer_va().raw())
+            }
         }
-        // Safety: the range `(self.addr..self.max_addr)` is valid and owned by this buffer and we
-        // verified above that `self.addr` + `data.len()` is included in the range. `buffer` is a
-        // mutable reference to buffer that owns this range.
-        unsafe {
-            core::ptr::copy(data.as_ptr(), self.addr.bits() as *mut u8, data.len());
-        }
-        let offset = self.addr.bits() - self.start.bits();
-        self.addr = end;
-        // Unwrap okay: `offset` cannot be bigger than `self.max_addr - self.start`.
-        Ok(HypMap::umode_buffer_va()
-            .raw()
-            .checked_increment(offset)
-            .unwrap())
     }
 
     /// Cleans up used memory and reset the current CPU's buffer to initial state.
     pub fn clear(&mut self) {
-        let size = self.addr.bits() - self.start.bits();
-        // Safety: the range `(self.addr..self.max_addr)` is valid and owned by this buffer.
-        // `self.addr` cannot exceed `self.max_addr`. `self` is a mutable reference to the buffer
-        // that owns this range.
-        unsafe {
-            core::ptr::write_bytes(self.start.bits() as *mut u8, 0, size as usize);
-        }
-        self.addr = self.start.into();
+        self.vslice.write_bytes(0);
+        self.status = UmodeBufferStatus::Empty;
     }
 }

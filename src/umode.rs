@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::hyp_map::UmodeBuffer;
+use crate::hyp_map::{UmodeBuffer, UMODE_BUFFER_SIZE, UMODE_BUFFER_START};
 use crate::smp::PerCpu;
 
 use core::arch::global_asm;
@@ -278,6 +278,14 @@ impl UmodeTask {
         arch.umode_regs
             .gprs
             .set_reg(GprIndex::A0, PerCpu::this_cpu().cpu_id().raw() as u64);
+        // Set U-mode Mapped Area address as a1.
+        arch.umode_regs
+            .gprs
+            .set_reg(GprIndex::A1, UMODE_BUFFER_START);
+        // Set U-mode Mapped Area size as a2.
+        arch.umode_regs
+            .gprs
+            .set_reg(GprIndex::A2, UMODE_BUFFER_SIZE);
         // sstatus set to 0 (by default) is actually okay.
         self.arch = arch;
         // Run task until it initializes itself and calls HypCall::NextOp().

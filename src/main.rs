@@ -501,15 +501,9 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     {
         // Temporary test: map a string into a U-mode buffer and have U-mode print it back.
         let mut buffer = UmodeTask::umode_buffer_mut();
-        let msg1 = "Hello from U-mode".as_bytes();
-        let vaddr = buffer.append(msg1).expect("Cannot append to U-mode buffer");
-        let msg2 = " (via U-mode buffer)".as_bytes();
-        let _ = buffer.append(msg2).expect("Cannot append to U-mode buffer");
-        UmodeTask::send_req(u_mode_api::UmodeRequest::print_string(
-            vaddr.bits(),
-            (msg1.len() + msg2.len()) as u64,
-        ))
-        .unwrap();
+        let msg1: [u8; 17] = "Hello from U-mode".as_bytes().try_into().unwrap();
+        let vaddr = buffer.store(msg1).expect("Cannot append to U-mode buffer");
+        UmodeTask::send_req(u_mode_api::UmodeRequest::print_string(msg1.len())).unwrap();
         // Request sent. Clear buffer contents.
         buffer.clear();
     }

@@ -20,8 +20,8 @@ use typenum::{Unsigned, U32};
 
 use crate::{
     measurement::{
-        MeasurementRegister, DYNAMIC_MSMT_REGISTERS, MSMT_REGISTERS, STATIC_MSMT_REGISTERS,
-        TVM_MSMT_REGISTERS,
+        MeasurementRegister, MeasurementRegisterHash, DYNAMIC_MSMT_REGISTERS, MSMT_REGISTERS,
+        STATIC_MSMT_REGISTERS, TVM_MSMT_REGISTERS,
     },
     Error, Result, TcgPcrIndex,
 };
@@ -230,6 +230,18 @@ impl<'a, D: Digest, H: HmacImpl<D>> AttestationManager<D, H> {
             .map_err(Error::DiceRoll)?;
 
         Ok(())
+    }
+
+    /// Extract data from attestation layer for U-mode operation.
+    pub fn measurement_registers(
+        &self,
+    ) -> Result<ArrayVec<MeasurementRegisterHash<D>, MSMT_REGISTERS>> {
+        Ok(self
+            .measurements
+            .read()
+            .iter()
+            .map(|m| m.digest.clone())
+            .collect())
     }
 
     /// Build a DER-formatted x.509 certificate from a CSR.
