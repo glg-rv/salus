@@ -35,7 +35,7 @@ pub enum Error {
     ElfUnalignedSegment,
     /// U-mode ELF segment is not in U-mode VA area.
     ElfInvalidAddress,
-    /// Not enough space on the U-mode map area.
+    /// Not enough space in the U-mode map area.
     OutOfMap,
     /// Could not create a mapper for the U-mode area.
     MapperCreationFailed,
@@ -43,6 +43,8 @@ pub enum Error {
     MapFailed,
     /// Could not unmap the U-mode area.
     UnmapFailed,
+    /// U-mode Shared Memory Error.
+    UmodeShared(VolatileMemoryError),
 }
 
 // Represents a virtual address region of the hypervisor that will be the same in all pagetables.
@@ -148,12 +150,12 @@ const UMODE_MAPPINGS_SIZE: u64 = UMODE_MAPPING_SLOTS * UMODE_MAPPING_SLOT_SIZE;
 const UMODE_MAPPINGS_END: u64 = UMODE_MAPPINGS_START + UMODE_MAPPINGS_SIZE;
 const_assert!(PageSize::Size4k.is_aligned(UMODE_MAPPINGS_END));
 
-/// Start of the U-mode buffer.
-pub const UMODE_BUFFER_START: u64 = UMODE_MAPPINGS_END + 4 * 1024 * 1024;
-const_assert!(PageSize::Size4k.is_aligned(UMODE_BUFFER_START));
-/// Size of the U-mode buffer.
-pub const UMODE_BUFFER_SIZE: u64 = 16 * 1024;
-const_assert!(PageSize::Size4k.is_aligned(UMODE_BUFFER_SIZE));
+/// Start of the U-mode Shared area.
+pub const UMODE_SHARED_START: u64 = UMODE_MAPPINGS_END + 4 * 1024 * 1024;
+const_assert!(PageSize::Size4k.is_aligned(UMODE_SHARED_START));
+/// Size of the U-mode Shared area.
+pub const UMODE_SHARED_SIZE: u64 = 16 * 1024;
+const_assert!(PageSize::Size4k.is_aligned(UMODE_SHARED_SIZE));
 
 /// Generic Id names for each of the U-mode mapping slots.
 /// There is no mandated use for each of the slots, and caller can decide to map each of them
@@ -296,8 +298,8 @@ impl PrivateRegion {
 pub struct HypPageTable {
     /// The pagetable containing hypervisor mappings.
     sv48: FirstStagePageTable<Sv48>,
-    /// U-mode buffer for this page-table.
-    umode_buffer: RefCell<UmodeBuffer>,
+    /// U-mode shared region for this page-table.
+    umode_shared: RefCell<UmodeSharedRegion>,
     /// A pte page pool for U-mode mappings.
     pte_pages: RefCell<SeqPageIter<InternalClean>>,
 }
@@ -366,9 +368,15 @@ impl HypPageTable {
             .map_err(|_| Error::UnmapFailed)
     }
 
-    /// Get the page-table U-mode buffer as a mutable reference.
-    pub fn umode_buffer_mut(&self) -> RefMut<UmodeBuffer> {
-        self.umode_buffer.borrow_mut()
+    /// Share a structure with U-mode by copying it into the `UmodeSharedRegion`. The structure will be
+    /// mapped in U-mode at UMODE_SHARED_START and will be accessible by U-mode read-only.
+    pub fn share_with_umode<T: DataInit>(&self, data: T) -> Result<(), Error> {
+        self.umode_shared.borrow_mut().store(data)
+    }
+
+    /// Clear all data previously shared with U-mode with `share_with_umode`.
+    pub fn clear_umode_shared(&self) {
+        self.umode_shared.borrow_mut().clear()
     }
 }
 
@@ -427,15 +435,6 @@ impl HypMap {
         )
     }
 
-    // Returns the virtual address of the U-mode buffer.
-    fn umode_buffer_va() -> PageAddr<SupervisorVirt> {
-        // UMODE_BUFFER_START is 4k aligned (enforced by static assertion), round_down wil be a no-op.
-        PageAddr::with_round_down(
-            RawAddr::supervisor_virt(UMODE_BUFFER_START),
-            PageSize::Size4k,
-        )
-    }
-
     /// Creates a new page table based on this memory map.
     pub fn new_page_table(&self, hyp_mem: &mut HypPageAlloc) -> HypPageTable {
         // Create empty sv48 page table
@@ -457,8 +456,8 @@ impl HypMap {
         for r in &self.private_regions {
             r.map(&sv48, hyp_mem);
         }
-        // Alloc and map the U-mode buffer for this page-table.
-        let umode_buffer = UmodeBuffer::map(&sv48, hyp_mem);
+        // Alloc and map the U-mode Shared Region for this page-table.
+        let umode_shared = UmodeSharedRegion::map(&sv48, hyp_mem);
         // Alloc pte_pages for U-mode mappings.
         let pte_pages = hyp_mem
             .take_pages_for_hyp_state(Sv48::max_pte_pages(
@@ -467,7 +466,7 @@ impl HypMap {
             .into_iter();
         HypPageTable {
             sv48,
-            umode_buffer: RefCell::new(umode_buffer),
+            umode_shared: RefCell::new(umode_shared),
             pte_pages: RefCell::new(pte_pages),
         }
     }
@@ -506,47 +505,28 @@ impl UmodeSlotMapper<'_> {
     }
 }
 
-/// Umode Buffer errors.
-#[derive(Debug)]
-pub enum UmodeBufferError {
-    /// Address overflow on increment.
-    AddressOverflow,
-    /// Buffer is full.
-    NoSpace(VolatileMemoryError),
-    /// Attempt to write to non-cleared buffer.
-    InUse,
-    /// Attempt to clear an unused buffer.
-    NotInUse,
+/// The U-mode Shared Region is a private region of the page table used by the hypervisor to pass
+/// data to the current U-mode operation. This avoids mapping hypervisor data directly in
+/// U-mode. This area is written by the hypervisor and mapped read-only in U-mode.
+pub struct UmodeSharedRegion {
+    /// Volatile Slice used to write to this area from the hypervisor.
+    vslice: VolatileSlice<'static>
 }
 
-// Track buffer status. Be sure it's cleaned after each use.
-enum UmodeBufferStatus {
-    // Buffer is unused.
-    Empty,
-    // Buffer is used (parameter indicates the bytes written).
-    InUse(usize),
-}
-
-/// The U-mode buffer is a private area of the page table used by the hypervisor to pass data to the
-/// current U-mode operation. This avoids mapping hypervisor data directly in U-mode. This area is
-/// written by the hypervisor and mapped read-only in U-mode.
-pub struct UmodeBuffer {
-    /// Status of the U-mode buffer.
-    status: UmodeBufferStatus,
-    /// The buffer memory.
-    vslice: VolatileSlice<'static>,
-}
-
-impl UmodeBuffer {
-    /// Creates a buffer of hypervisor memory that can be mapped into a U-mode slot.
-    pub fn map(sv48: &FirstStagePageTable<Sv48>, hyp_mem: &mut HypPageAlloc) -> UmodeBuffer {
-        // Allocate buffer pages.
-        let num_pages = PageSize::num_4k_pages(UMODE_BUFFER_SIZE);
+impl UmodeSharedRegion {
+    /// Allocate hypervisor pages and map them read-only in U-mode VA space.
+    pub fn map(sv48: &FirstStagePageTable<Sv48>, hyp_mem: &mut HypPageAlloc) -> Self {
+        // Allocate pages.
+        let num_pages = PageSize::num_4k_pages(UMODE_SHARED_SIZE);
         let pages = hyp_mem.take_pages_for_hyp_state(num_pages as usize);
         let start = pages.base();
 
-        // Map the allocated pages as read-only in U-mode at UMODE_BUFFER_START.
-        let vaddr = HypMap::umode_buffer_va();
+        // Map the allocated pages as read-only in U-mode at UMODE_SHARED_START.
+        // UMODE_SHARED_START is 4k aligned (enforced by static assertion), round_down wil be a no-op.
+        let vaddr = PageAddr::with_round_down(
+            RawAddr::supervisor_virt(UMODE_SHARED_START),
+            PageSize::Size4k,
+        );
         let pte_fields = PteFieldBits::leaf_with_perms(PteLeafPerms::UR);
         // Unwrap okay: this is called once when we are creating the page-table. Guaranteed to be
         // unmapped.
@@ -561,45 +541,37 @@ impl UmodeBuffer {
             .take(num_pages as usize)
         {
             // Safety: These pages are mapped read-only in the VA area reserved for the U-mode
-            // buffer mappings. Hypervisor will write to these pages using the physical mappings and
-            // U-mode will read them through this mapping. Safe because these are per-CPU mappings,
-            // and when the hypervisor will be writing to these pages via the physical mappings no
-            // CPU will be able to access these pages through the U-mode mappings.
+            // shared region mappings. Hypervisor will write to these pages using the physical
+            // mappings and U-mode will read them through this mapping. Safe because these are
+            // per-CPU mappings, and when the hypervisor will be writing to these pages via the
+            // physical mappings no CPU will be able to access these pages through the U-mode
+            // mappings.
             unsafe {
                 mapper.map_addr(virt, phys, pte_fields).unwrap();
             }
         }
         // Safety: the range `(start..max_addr)` is mapped in U-mode as read-only and was uniquely
-        // claimed for this buffer from the hypervisor map above.
+        // claimed for this area from the hypervisor map above.
         let vslice = unsafe {
-            VolatileSlice::from_raw_parts(start.raw().bits() as *mut u8, UMODE_BUFFER_SIZE as usize)
+            VolatileSlice::from_raw_parts(start.raw().bits() as *mut u8, UMODE_SHARED_SIZE as usize)
         };
-        UmodeBuffer {
-            status: UmodeBufferStatus::Empty,
+        Self {
             vslice,
         }
     }
 
-    /// Appends `data` in the current CPU's buffer. Returns the U-mode virtual address where `data`
-    /// has been written.
-    pub fn store<T: DataInit>(
+    // Writes `data` in the current CPU's U-mode Shared Region.
+    fn store<T: DataInit>(
         &mut self,
         data: T,
-    ) -> Result<RawAddr<SupervisorVirt>, UmodeBufferError> {
-        match self.status {
-            UmodeBufferStatus::InUse(_) => Err(UmodeBufferError::InUse),
-            UmodeBufferStatus::Empty => {
-                let vref = self.vslice.get_ref(0).map_err(UmodeBufferError::NoSpace)?;
-                vref.store(data);
-                self.status = UmodeBufferStatus::InUse(core::mem::size_of::<T>());
-                Ok(HypMap::umode_buffer_va().raw())
-            }
-        }
+    ) -> Result<(), Error> {
+        let vref = self.vslice.get_ref(0).map_err(Error::UmodeShared)?;
+        vref.store(data);
+        Ok(())
     }
 
-    /// Cleans up used memory and reset the current CPU's buffer to initial state.
-    pub fn clear(&mut self) {
+    // Cleans up used memory and reset the U-mode shared region to initial state.
+    fn clear(&mut self) {
         self.vslice.write_bytes(0);
-        self.status = UmodeBufferStatus::Empty;
     }
 }

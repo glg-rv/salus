@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::hyp_map::{UmodeBuffer, UMODE_BUFFER_SIZE, UMODE_BUFFER_START};
+use crate::hyp_map::{Error as HypMapError, UMODE_SHARED_SIZE, UMODE_SHARED_START};
 use crate::smp::PerCpu;
 
 use core::arch::global_asm;
@@ -10,6 +10,7 @@ use core::cell::RefMut;
 use core::fmt;
 use core::mem::size_of;
 use core::ops::ControlFlow;
+use data_model::DataInit;
 use memoffset::offset_of;
 use riscv_elf::ElfMap;
 use riscv_regs::{Exception::UserEnvCall, GeneralPurposeRegisters, GprIndex, Readable, Trap, CSR};
@@ -228,9 +229,18 @@ global_asm!(
     umode_sstatus = const umode_csr_offset!(sstatus),
 );
 
-/// Errors returned by U-mode operations.
 #[derive(Debug)]
+/// Errors returned by U-mode functions.
 pub enum Error {
+    /// U-mode task returned an error while running.
+    Exec(ExecError),
+    /// Error while sharing data.
+    HypMap(HypMapError),
+}
+
+/// Errors returned by U-mode task execution.
+#[derive(Debug)]
+pub enum ExecError {
     /// Received an unexpected trap while running Umode.
     UnexpectedTrap,
     /// Umode called panic.
@@ -258,18 +268,13 @@ impl UmodeTask {
     pub fn setup_this_cpu() -> Result<(), Error> {
         let arch = UmodeCpuArchState::default();
         let mut task = UmodeTask { arch };
-        task.reset()?;
+        task.reset().map_err(Error::Exec)?;
         // Install umode cpu state in the current cpu.
         PerCpu::this_cpu().set_umode_task(task);
         Ok(())
     }
 
-    /// Return the U-mode buffer for this task.
-    pub fn umode_buffer_mut() -> RefMut<'static, UmodeBuffer> {
-        PerCpu::this_cpu().page_table().umode_buffer_mut()
-    }
-
-    fn reset(&mut self) -> Result<(), Error> {
+    fn reset(&mut self) -> Result<(), ExecError> {
         // Initialize umode CPU state to run at ELF entry.
         let mut arch = UmodeCpuArchState::default();
         // Unwrap okay: this is called after `Self::init()`.
@@ -278,14 +283,14 @@ impl UmodeTask {
         arch.umode_regs
             .gprs
             .set_reg(GprIndex::A0, PerCpu::this_cpu().cpu_id().raw() as u64);
-        // Set U-mode Mapped Area address as a1.
+        // Set U-mode Shared Area address as a1.
         arch.umode_regs
             .gprs
-            .set_reg(GprIndex::A1, UMODE_BUFFER_START);
-        // Set U-mode Mapped Area size as a2.
+            .set_reg(GprIndex::A1, UMODE_SHARED_START);
+        // Set U-mode Shared Area size as a2.
         arch.umode_regs
             .gprs
-            .set_reg(GprIndex::A2, UMODE_BUFFER_SIZE);
+            .set_reg(GprIndex::A2, UMODE_SHARED_SIZE);
         // sstatus set to 0 (by default) is actually okay.
         self.arch = arch;
         // Run task until it initializes itself and calls HypCall::NextOp().
@@ -293,14 +298,16 @@ impl UmodeTask {
         Ok(())
     }
 
-    /// Send a request and execute U-mode until an error is returned.
-    pub fn send_req(req: UmodeRequest) -> Result<(), Error> {
+    fn execute_request<T: DataInit>(req: UmodeRequest, shared_data: Option<T>) -> Result<(), Error> {
         let mut task = PerCpu::this_cpu().umode_task_mut();
         req.to_registers(task.arch.umode_regs.gprs.a_regs_mut());
+        if let Some(data) = shared_data {
+            PerCpu::this_cpu().page_table().share_with_umode(data).map_err(Error::HypMap)?;
+        }
         let ret = task.run();
         if let Err(e) = &ret {
             match e {
-                Error::UnexpectedTrap | Error::Panic => {
+                ExecError::UnexpectedTrap | ExecError::Panic => {
                     // Reset on unrecoverable u-mode error.
                     // 1. restore memory to original state
                     PerCpu::this_cpu().page_table().restore_umode();
@@ -308,20 +315,33 @@ impl UmodeTask {
                     // Panic if we can't restore umode: the hypervisor is in an unrecoverable state.
                     task.reset().expect("Failed to recover U-mode.");
                 }
-                Error::Umode(_) => {}
+                ExecError::Umode(_) => {}
             }
         }
-        ret
+        if shared_data.is_some() {
+            PerCpu::this_cpu().page_table().clear_umode_shared();
+        }
+        ret.map_err(Error::Exec)
     }
 
-    fn handle_ecall(&mut self) -> ControlFlow<Result<(), Error>> {
+    /// Send a request and execute U-mode until an error is returned.
+    pub fn send_req(req: UmodeRequest) -> Result<(), Error> {
+        Self::execute_request::<u8>(req, None)
+    }
+
+    /// Same as `send_req` but share `shared_data` in U-mode shared area while executing this request.
+    pub fn send_req_with_shared_data<T: DataInit>(req: UmodeRequest, shared_data: T) -> Result<(), Error> {
+        Self::execute_request(req, Some(shared_data))
+    }
+
+    fn handle_ecall(&mut self) -> ControlFlow<Result<(), ExecError>> {
         let regs = self.arch.umode_regs.gprs.a_regs();
         let cflow = match HypCall::try_from_registers(regs) {
             Ok(hypercall) => match hypercall {
                 HypCall::Panic => {
                     println!("U-mode panic!");
                     println!("{}", self.arch);
-                    ControlFlow::Break(Err(Error::Panic))
+                    ControlFlow::Break(Err(ExecError::Panic))
                 }
                 HypCall::PutChar(byte) => {
                     if let Some(c) = char::from_u32(byte as u32) {
@@ -330,11 +350,11 @@ impl UmodeTask {
                     // No return. Leave umode registers untouched and return.
                     ControlFlow::Continue(())
                 }
-                HypCall::NextOp(result) => ControlFlow::Break(result.map_err(Error::Umode)),
+                HypCall::NextOp(result) => ControlFlow::Break(result.map_err(ExecError::Umode)),
             },
             Err(err) => {
                 // Hypervisor could not parse the hypercall. Stop running umode and return error.
-                ControlFlow::Break(Err(Error::Umode(err)))
+                ControlFlow::Break(Err(ExecError::Umode(err)))
             }
         };
         // Increase SEPC to skip ecall on entry.
@@ -354,7 +374,7 @@ impl UmodeTask {
     }
 
     // Run `umode` until result is returned.
-    fn run(&mut self) -> Result<(), Error> {
+    fn run(&mut self) -> Result<(), ExecError> {
         loop {
             self.run_to_exit();
             match Trap::from_scause(self.arch.trap_csrs.scause).unwrap() {
@@ -365,7 +385,7 @@ impl UmodeTask {
                 _ => {
                     println!("Unexpected U-mode Trap:");
                     println!("{}", self.arch);
-                    break Err(Error::UnexpectedTrap);
+                    break Err(ExecError::UnexpectedTrap);
                 }
             }
         }
