@@ -33,11 +33,11 @@ SECTIONS
         *(.sbss .sbss.*) *(.bss .bss.*)
     } :data
 
-    . += 4096;
+    . += 10*1024*1024;
 
     .stack ALIGN(4096) (NOLOAD) : {
     PROVIDE(_stack_start = .);
-    . += 16*1024;
+    . += 256*1024;
     PROVIDE(_stack_end = .);
     } :stack
 
