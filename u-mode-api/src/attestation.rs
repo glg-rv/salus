@@ -14,17 +14,17 @@ pub const MSMT_REGISTERS: usize = 8;
 
 /// Compound Device Identifier (CDI) ID type.
 pub type CdiId = [u8; CDI_LEN];
-/// Array of measurement registers for the Sha384 case. In `fwid` order.
-pub type MeasurementRegistersSha384 = [[u8; SHA384_LEN]; MSMT_REGISTERS];
+/// Measurement registers for the Sha384 case.
+pub type MeasurementRegisterSha384 = [u8; SHA384_LEN];
 
 /// State passed to `get_evidence`.
 /// Represents the status of the DICE layer needed to generate a
 /// certificate.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GetSha384Certificate {
-    /// Status of the measurement registers.
-    pub msmt_regs: MeasurementRegistersSha384,
+    /// Measurement registers in SHA-384. In `fwid` order.
+    pub msmt_regs: [MeasurementRegisterSha384; MSMT_REGISTERS],
     /// CDI Id.
     pub cdi_id: CdiId,
 }

@@ -510,7 +510,7 @@ impl UmodeSlotMapper<'_> {
 /// U-mode. This area is written by the hypervisor and mapped read-only in U-mode.
 pub struct UmodeSharedRegion {
     /// Volatile Slice used to write to this area from the hypervisor.
-    vslice: VolatileSlice<'static>
+    vslice: VolatileSlice<'static>,
 }
 
 impl UmodeSharedRegion {
@@ -555,16 +555,11 @@ impl UmodeSharedRegion {
         let vslice = unsafe {
             VolatileSlice::from_raw_parts(start.raw().bits() as *mut u8, UMODE_SHARED_SIZE as usize)
         };
-        Self {
-            vslice,
-        }
+        Self { vslice }
     }
 
     // Writes `data` in the current CPU's U-mode Shared Region.
-    fn store<T: DataInit>(
-        &mut self,
-        data: T,
-    ) -> Result<(), Error> {
+    fn store<T: DataInit>(&mut self, data: T) -> Result<(), Error> {
         let vref = self.vslice.get_ref(0).map_err(Error::UmodeShared)?;
         vref.store(data);
         Ok(())

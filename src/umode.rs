@@ -298,11 +298,17 @@ impl UmodeTask {
         Ok(())
     }
 
-    fn execute_request<T: DataInit>(req: UmodeRequest, shared_data: Option<T>) -> Result<(), Error> {
+    fn execute_request<T: DataInit>(
+        req: UmodeRequest,
+        shared_data: Option<T>,
+    ) -> Result<(), Error> {
         let mut task = PerCpu::this_cpu().umode_task_mut();
         req.to_registers(task.arch.umode_regs.gprs.a_regs_mut());
         if let Some(data) = shared_data {
-            PerCpu::this_cpu().page_table().share_with_umode(data).map_err(Error::HypMap)?;
+            PerCpu::this_cpu()
+                .page_table()
+                .share_with_umode(data)
+                .map_err(Error::HypMap)?;
         }
         let ret = task.run();
         if let Err(e) = &ret {
@@ -330,7 +336,10 @@ impl UmodeTask {
     }
 
     /// Same as `send_req` but share `shared_data` in U-mode shared area while executing this request.
-    pub fn send_req_with_shared_data<T: DataInit>(req: UmodeRequest, shared_data: T) -> Result<(), Error> {
+    pub fn send_req_with_shared_data<T: DataInit>(
+        req: UmodeRequest,
+        shared_data: T,
+    ) -> Result<(), Error> {
         Self::execute_request(req, Some(shared_data))
     }
 

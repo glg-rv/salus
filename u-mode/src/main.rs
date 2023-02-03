@@ -17,9 +17,30 @@
 
 extern crate libuser;
 
+use core::alloc::{GlobalAlloc, Layout};
 use data_model::{VolatileMemory, VolatileSlice};
 use libuser::*;
-use u_mode_api::{Error as UmodeApiError, UmodeOp, UmodeRequest};
+use u_mode_api::{
+    attestation::GetSha384Certificate, Error as UmodeApiError, UmodeOp, UmodeRequest,
+};
+
+mod cert;
+
+// Dummy global allocator - panic if anything tries to do an allocation.
+struct GeneralGlobalAlloc;
+
+unsafe impl GlobalAlloc for GeneralGlobalAlloc {
+    unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
+        panic!("alloc called!");
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        panic!("dealloc called!");
+    }
+}
+
+#[global_allocator]
+static GENERAL_ALLOCATOR: GeneralGlobalAlloc = GeneralGlobalAlloc;
 
 struct UmodeTask {
     vslice: VolatileSlice<'static>,
@@ -37,21 +58,19 @@ impl UmodeTask {
         // Print maximum 80 chars.
         const max_length: usize = 80;
         let len = req.args[0] as usize;
-        let vs_input = self.vslice.get_slice(0, len).map_err(|_| UmodeApiError::InvalidArgument)?;
+        let vs_input = self
+            .vslice
+            .get_slice(0, len)
+            .map_err(|_| UmodeApiError::InvalidArgument)?;
         // Copy input from volatile slice.
         let mut input = [0u8; max_length];
         vs_input.copy_to(&mut input[..]);
         let len = core::cmp::min(max_length, len);
         println!(
-            "Received a {} bytes string: \"{}\"", len,
+            "Received a {} bytes string: \"{}\"",
+            len,
             core::str::from_utf8(&input[0..len]).map_err(|_| UmodeApiError::InvalidArgument)?
         );
-        /*
-                println!(
-                    "{}",
-                    core::str::from_utf8(input).map_err(|_| UmodeApiError::InvalidArgument)?
-                );
-        */
         Ok(())
     }
 
@@ -76,6 +95,37 @@ impl UmodeTask {
         Ok(())
     }
 
+    // Create a signed certificate from the CSR and the DICE layer measurements.
+    //
+    // Arguments:
+    //    [0] = address of the Certificate Signing Request.
+    //    [1] = length of the Certificate Signing Request.
+    //    [2] = address where the output Certificate will be written.
+    //    [3] = length of the area available for the output Certificate .
+    //
+    // U-mode Mapped Area:
+    //    Contains a structure of type `GetSha384Certificate`
+    fn op_get_certificate(&self, req: &UmodeRequest) -> Result<(), UmodeApiError> {
+        let csr_addr = req.args[0];
+        let csr_len = req.args[1] as usize;
+        let certout_addr = req.args[2];
+        let certout_len = req.args[3] as usize;
+        // Safety: we trust the hypervisor to have mapped at `csr_addr` `csr_len` bytes for reading.
+        let csr = unsafe { &*core::ptr::slice_from_raw_parts(csr_addr as *const u8, csr_len) };
+        // Safety: we trust the hypervisor to have mapped at `certout_addr` `certout_len` bytes valid
+        // for reading and writing.
+        let certout = unsafe {
+            &mut *core::ptr::slice_from_raw_parts_mut(certout_addr as *mut u8, certout_len)
+        };
+        let shared_data = self
+            .vslice
+            .get_ref(0)
+            .map_err(|_| UmodeApiError::Failed)?
+            .load();
+        cert::get_certificate_sha384(csr, certout, shared_data);
+        Ok(())
+    }
+
     // Run the main loop, receiving requests from the hypervisor and executing them.
     fn run_loop(&self) -> ! {
         let mut res = Ok(());
@@ -87,7 +137,7 @@ impl UmodeTask {
                     UmodeOp::Nop => Ok(()),
                     UmodeOp::PrintString => self.op_print_string(&req),
                     UmodeOp::MemCopy => self.op_memcopy(&req),
-                    UmodeOp::GetEvidence => Err(UmodeApiError::InvalidArgument),
+                    UmodeOp::GetEvidence => self.op_get_certificate(&req),
                 },
                 Err(err) => Err(err),
             };

@@ -1568,13 +1568,34 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         // Map CSR read-only.
         let (csr_vaddr, _csr_mapping) =
             self.map_guest_range_in_umode_slot(UmodeSlotId::A, csr_raw_addr, csr_size, false)?;
+        // Map Output Certifical writable.
         let (certout_vaddr, _certout_mapping) = self.map_guest_range_in_umode_slot(
             UmodeSlotId::B,
             certout_raw_addr,
             certout_size,
             true,
         )?;
-        let measurement_registers = self.attestation_mgr().measurement_registers()?;
+        // Gather measurement registers from the attestation manager and transform it in a array.
+        // TODO: add const_assert! to check that SHA384_LEN is indeed the size of the SHA384 hash.
+        let msmt_genarray = self.attestation_mgr().measurement_registers()?;
+        let zero = [0u8; u_mode_api::attestation::SHA384_LEN];
+        let mut msmt_regs = [zero; u_mode_api::attestation::MSMT_REGISTERS];
+        for (i, r) in msmt_genarray.iter().enumerate() {
+            msmt_regs[i].copy_from_slice(r.as_slice());
+        }
+        // Get the CDI ID for the attestation layer.
+        let cdi_id = self.attestation_mgr().attestation_cdi_id()?;
+        let shared_data = u_mode_api::attestation::GetSha384Certificate { msmt_regs, cdi_id };
+        let request = u_mode_api::UmodeRequest::get_evidence(
+            csr_vaddr,
+            csr_size as usize,
+            certout_vaddr,
+            certout_size as usize,
+        );
+        let x = UmodeTask::send_req_with_shared_data(request, shared_data)
+            .map_err(|_| EcallError::Sbi(SbiError::Failed));
+        println!("UMODE REQ: {:?}", x);
+        println!("{:x?}", shared_data);
         Err(EcallError::Sbi(SbiError::InvalidParam))
     }
 
@@ -1679,6 +1700,15 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         cert_size: usize,
         active_pages: &ActiveVmPages<T>,
     ) -> EcallResult<u64> {
+        let _ = self.guest_test_get_evidence(
+            cert_request_addr,
+            cert_request_size as u64,
+            0,
+            0,
+            cert_addr_out,
+            cert_size as u64,
+        );
+
         if cert_request_size > MAX_CSR_LEN {
             return Err(EcallError::Sbi(SbiError::InsufficientBufferCapacity));
         }

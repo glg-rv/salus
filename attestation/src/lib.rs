@@ -12,7 +12,7 @@ pub enum Error {
     /// The DICE engine failed to extract a CDI.
     DiceCdiExtraction(rice::Error),
 
-    /// The DICE engine Failed to generate a certificate from a CSR.
+    /// The DICE engine failed to generate a certificate from a CSR.
     DiceCsrCertificate(rice::Error),
 
     /// The DICE engine failed to build a new layer.
@@ -35,6 +35,9 @@ pub enum Error {
 
     /// Derived Key is too short
     DerivedKeyTooShort,
+
+    /// The DICE engined failed to retrieve the CDI ID.
+    DiceCdiId(rice::Error),
 }
 
 /// Custom attestation result.

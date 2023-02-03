@@ -10,7 +10,7 @@ use ed25519_dalek::SECRET_KEY_LENGTH;
 use generic_array::GenericArray;
 use hkdf::HmacImpl;
 use rice::{
-    cdi::CdiType,
+    cdi::{CdiType, CDI_ID_LEN},
     layer::Layer,
     x509::{certificate::MAX_CERT_SIZE, extensions::dice::tcbinfo::DiceTcbInfo, request::CertReq},
 };
@@ -244,6 +244,10 @@ impl<'a, D: Digest, H: HmacImpl<D>> AttestationManager<D, H> {
             .collect())
     }
 
+    pub fn attestation_cdi_id(&self) -> Result<[u8; CDI_ID_LEN]> {
+        self.attestation_layer.cdi_id().map_err(Error::DiceCdiId)
+    }
+
     /// Build a DER-formatted x.509 certificate from a CSR.
     /// The built certificate is signed by the TSM, and contains the provided
     /// subject and subject PKI.
@@ -292,4 +296,8 @@ impl<'a, D: Digest, H: HmacImpl<D>> AttestationManager<D, H> {
 
         Ok(caps)
     }
+}
+
+struct Byte<T, const N: usize> {
+    data: [T; N],
 }

@@ -501,7 +501,11 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     {
         // Temporary test: share a string with U-mode and have U-mode print it back.
         let msg1: [u8; 17] = "Hello from U-mode".as_bytes().try_into().unwrap();
-        UmodeTask::send_req_with_shared_data(u_mode_api::UmodeRequest::print_string(msg1.len()), msg1).unwrap();
+        UmodeTask::send_req_with_shared_data(
+            u_mode_api::UmodeRequest::print_string(msg1.len()),
+            msg1,
+        )
+        .unwrap();
     }
 
     // Now load the host VM.
