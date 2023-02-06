@@ -123,6 +123,8 @@ impl IntoRegisters for Result<(), Error> {
 pub enum UmodeOp {
     /// Do nothing.
     Nop = 1,
+    /// (Test) Print data passed in input.
+    PrintString = 2,
     /// (Test) Copy memory from input to output.
     MemCopy = 3,
 }
@@ -133,6 +135,7 @@ impl TryFrom<u64> for UmodeOp {
     fn try_from(reg: u64) -> Result<UmodeOp, Error> {
         match reg {
             1 => Ok(UmodeOp::Nop),
+            2 => Ok(UmodeOp::PrintString),
             3 => Ok(UmodeOp::MemCopy),
             _ => Err(Error::RequestNotSupported),
         }
@@ -157,6 +160,20 @@ impl UmodeRequest {
         UmodeRequest {
             op: UmodeOp::Nop,
             args: [0; 7],
+        }
+    }
+
+    /// Print String from U-mode Shared Region
+    ///
+    /// Arguments:
+    ///    [0] = length of data in the U-mode Shared Region to be printed.
+    ///
+    /// U-mode Shared Region:
+    ///    Contains the data to be printed at the beginning of the area.
+    pub fn print_string(len: usize) -> UmodeRequest {
+        UmodeRequest {
+            op: UmodeOp::PrintString,
+            args: [len as u64, 0, 0, 0, 0, 0, 0],
         }
     }
 
