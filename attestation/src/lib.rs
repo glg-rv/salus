@@ -35,6 +35,9 @@ pub enum Error {
 
     /// Derived Key is too short
     DerivedKeyTooShort,
+
+    /// The DICE engined failed to retrieve the CDI ID.
+    DiceCdiId(rice::Error),
 }
 
 /// Custom attestation result.
@@ -171,7 +174,7 @@ macro_rules! impl_newtype {
 /// The attesation manager
 pub mod manager;
 // TCB layer measurement module
-mod measurement;
+pub mod measurement;
 
 // Alias and be less mouthful.
 pub use manager::AttestationManager;

@@ -44,6 +44,9 @@
 //! specified in the ELF file with register `A0` containing a unique
 //! u64 ID (the CPU ID).
 
+/// Attestation-related data structures.
+pub mod cert;
+
 /// The Error type returned returned from this library.
 #[derive(Debug, Clone, Copy)]
 #[repr(u64)]
@@ -90,23 +93,24 @@ pub trait TryIntoRegisters: Sized {
     fn to_registers(&self, regs: &mut [u64]);
 }
 
-// Result<(), Error> is passed through registers. Implement trait.
+// Result<u64, Error> is passed through registers. Implement trait.
 
 // Error code for success.
 const HYPC_SUCCESS: u64 = 0;
 
-impl IntoRegisters for Result<(), Error> {
-    fn from_registers(regs: &[u64]) -> Result<(), Error> {
+impl IntoRegisters for Result<u64, Error> {
+    fn from_registers(regs: &[u64]) -> Result<u64, Error> {
         match regs[0] {
-            HYPC_SUCCESS => Ok(()),
+            HYPC_SUCCESS => Ok(regs[1]),
             e => Err(e.into()),
         }
     }
 
     fn to_registers(&self, regs: &mut [u64]) {
         match self {
-            Ok(_) => {
+            Ok(result) => {
                 regs[0] = HYPC_SUCCESS;
+                regs[1] = *result;
             }
             Err(e) => {
                 regs[0] = *e as u64;
@@ -135,6 +139,19 @@ pub enum UmodeRequest {
         in_addr: u64,
         /// length of input and output
         len: u64,
+    },
+    /// Get Attestation Evidence.
+    ///
+    /// Umode Shared Region: contains `GetEvidenceShared`.
+    GetEvidence {
+        /// starting address of the Certificate Signing Request.
+        csr_addr: u64,
+        /// size of the Certificate Signing Request.
+        csr_len: usize,
+        /// starting address of the output Certificate.
+        certout_addr: u64,
+        /// size of the output Certificate.
+        certout_len: usize,
     },
 }
 
@@ -191,6 +208,7 @@ impl UmodeRequest {
 const UMOP_NOP: u64 = 0;
 const UMOP_MEMCOPY: u64 = 1;
 const UMOP_PRINTSTR: u64 = 2;
+const UMOP_GET_EVIDENCE: u64 = 3;
 
 impl TryIntoRegisters for UmodeRequest {
     fn try_from_registers(regs: &[u64]) -> Result<UmodeRequest, Error> {
@@ -203,6 +221,12 @@ impl TryIntoRegisters for UmodeRequest {
             }),
             UMOP_PRINTSTR => Ok(UmodeRequest::PrintString {
                 len: regs[1] as usize,
+            }),
+            UMOP_GET_EVIDENCE => Ok(UmodeRequest::GetEvidence {
+                csr_addr: regs[1],
+                csr_len: regs[2] as usize,
+                certout_addr: regs[3],
+                certout_len: regs[3] as usize,
             }),
             _ => Err(Error::RequestNotSupported),
         }
@@ -227,6 +251,18 @@ impl TryIntoRegisters for UmodeRequest {
                 regs[0] = UMOP_PRINTSTR;
                 regs[1] = len as u64;
             }
+            UmodeRequest::GetEvidence {
+                csr_addr,
+                csr_len,
+                certout_addr,
+                certout_len,
+            } => {
+                regs[0] = UMOP_GET_EVIDENCE;
+                regs[1] = csr_addr;
+                regs[2] = csr_len as u64;
+                regs[3] = certout_addr;
+                regs[4] = certout_len as u64;
+            }
         }
     }
 }
@@ -240,7 +276,7 @@ pub enum HypCall {
     /// Print a character for debug.
     PutChar(u8),
     /// Return result of previous request and wait for next operation.
-    NextOp(Result<(), Error>),
+    NextOp(Result<u64, Error>),
 }
 
 const HYPC_PANIC: u64 = 0;

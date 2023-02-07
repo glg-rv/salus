@@ -23,7 +23,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
- "rice",
+ "rice 0.1.0",
  "sbi_rs",
  "spin",
  "spki",
@@ -474,6 +474,27 @@ checksum = "90bde5296fc891b0cef12a6d03ddccc162ce7b2aff54160af9338f8d40df6d19"
 [[package]]
 name = "rice"
 version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "const-oid",
+ "der",
+ "digest 0.10.3",
+ "ed25519",
+ "ed25519-dalek",
+ "flagset",
+ "generic-array",
+ "hex",
+ "hkdf",
+ "hmac",
+ "sha2 0.10.2",
+ "spin",
+ "spki",
+ "zeroize",
+]
+
+[[package]]
+name = "rice"
+version = "0.1.0"
 source = "git+https://github.com/rivosinc/rice#9575afb0baa71560c648222cff8b8b0be59e5703"
 dependencies = [
  "arrayvec",
@@ -574,7 +595,7 @@ dependencies = [
  "hyp_alloc",
  "memoffset",
  "page_tracking",
- "rice",
+ "rice 0.1.0",
  "riscv_elf",
  "riscv_page_tables",
  "riscv_pages",
@@ -734,7 +755,7 @@ dependencies = [
  "device_tree",
  "fdt-rs",
  "hex-literal",
- "rice",
+ "rice 0.1.0 (git+https://github.com/rivosinc/rice)",
  "riscv_regs",
  "s_mode_utils",
  "sbi_rs",
@@ -776,6 +797,10 @@ checksum = "dcf81ac59edc17cc8697ff311e8f5ef2d99fcbd9817b34cec66f90b6c3dfd987"
 [[package]]
 name = "u_mode_api"
 version = "0.1.0"
+dependencies = [
+ "attestation",
+ "data_model",
+]
 
 [[package]]
 name = "ucd-trie"
@@ -787,8 +812,15 @@ checksum = "89570599c4fe5585de2b388aab47e99f7fa4e9238a1399f707a02e356058141c"
 name = "umode"
 version = "0.1.0"
 dependencies = [
+ "const-oid",
  "data_model",
+ "der",
+ "ed25519",
+ "ed25519-dalek",
+ "generic-array",
  "libuser",
+ "rice 0.1.0",
+ "sha2 0.10.2",
  "u_mode_api",
 ]
 
