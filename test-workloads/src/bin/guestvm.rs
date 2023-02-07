@@ -217,7 +217,7 @@ fn test_attestation() {
 
     let request_data = [0u8; sbi_rs::EVIDENCE_DATA_BLOB_SIZE];
     let cert_bytes = match attestation::get_evidence(
-        TEST_CSR,
+        &TEST_CSR[0..25],
         &request_data,
         sbi_rs::EvidenceFormat::DiceTcbInfo,
     ) {

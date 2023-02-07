@@ -106,7 +106,7 @@ impl UmodeTask {
         let csr = unsafe { &*core::ptr::slice_from_raw_parts(csr_addr as *const u8, csr_len) };
         // Safety: we trust the hypervisor to have mapped at `certout_addr` `certout_len` bytes valid
         // for reading and writing.
-        let mut certout = unsafe {
+        let certout = unsafe {
             &mut *core::ptr::slice_from_raw_parts_mut(certout_addr as *mut u8, certout_len)
         };
         let shared_data = self
@@ -114,7 +114,17 @@ impl UmodeTask {
             .get_ref(0)
             .map_err(|_| UmodeApiError::Failed)?
             .load();
-        Ok(cert::get_certificate_sha384(csr, shared_data, &mut certout)? as u64)
+        cert::get_certificate_sha384(csr, shared_data, certout).map_err(|e| {
+            println!("get_certificate failed: {:?}", e);
+            use cert::Error::*;
+            match e {
+                CsrBufferTooSmall(_, _)
+                | CsrParseFailed(_)
+                | CsrVerificationFailed(_)
+                | CertificateBufferTooSmall(_, _) => UmodeApiError::InvalidArgument,
+                _ => UmodeApiError::Failed,
+            }
+        })
     }
 
     // Run the main loop, receiving requests from the hypervisor and executing them.

@@ -19,11 +19,8 @@ use spin::RwLock;
 use typenum::{Unsigned, U32};
 
 use crate::{
-    measurement::{
-        MeasurementRegister, MeasurementRegisterDigest, DYNAMIC_MSMT_REGISTERS, MSMT_REGISTERS,
-        STATIC_MSMT_REGISTERS, TVM_MSMT_REGISTERS,
-    },
-    Error, Result, TcgPcrIndex,
+    measurement::{MeasurementRegister, MeasurementRegisterDigest, TVM_MSMT_REGISTERS},
+    Error, Result, TcgPcrIndex, DYNAMIC_MSMT_REGISTERS, MSMT_REGISTERS, STATIC_MSMT_REGISTERS,
 };
 
 // TODO Get the SVN from the RoT
@@ -244,6 +241,7 @@ impl<'a, D: Digest, H: HmacImpl<D>> AttestationManager<D, H> {
             .collect())
     }
 
+    /// Return the CDI ID of the attestation layer.
     pub fn attestation_cdi_id(&self) -> Result<[u8; CDI_ID_LEN]> {
         self.attestation_layer.cdi_id().map_err(Error::DiceCdiId)
     }

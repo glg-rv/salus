@@ -4,20 +4,19 @@
 
 use attestation::{AttestationManager, Error as AttestationError, TcgPcrIndex};
 use core::{mem, ops::ControlFlow, slice};
-use der::Decode;
 use drivers::{imsic::*, pmu::PmuInfo};
 use page_tracking::collections::PageBox;
 use page_tracking::{LockedPageList, PageList, PageTracker, TlbVersion};
-use rice::x509::{request::CertReq, MAX_CSR_LEN};
 use riscv_page_tables::{GuestStagePageTable, GuestStagePagingMode};
 use riscv_pages::*;
 use riscv_regs::{DecodedInstruction, Exception, GprIndex, Instruction, Interrupt, Trap};
 use s_mode_utils::print::*;
 use sbi_rs::{salus::*, Error as SbiError, *};
+use u_mode_api::Error as UmodeApiError;
 
 use crate::guest_tracking::{GuestStateGuard, GuestVm, Guests};
 use crate::hyp_map::UmodeSlotId;
-use crate::umode::UmodeTask;
+use crate::umode::{Error as UmodeError, ExecError, UmodeTask};
 use crate::vm_cpu::{ActiveVmCpu, VmCpu, VmCpuParent, VmCpuStatus, VmCpuTrap, VmCpus, VM_CPUS_MAX};
 use crate::vm_pages::Error as VmPagesError;
 use crate::vm_pages::{
@@ -186,6 +185,24 @@ impl From<AttestationError> for EcallError {
             // TODO: Map individual error types.
             // InvalidParam may not be the right value for each error.
             _ => EcallError::Sbi(SbiError::InvalidParam),
+        }
+    }
+}
+
+impl From<UmodeApiError> for EcallError {
+    fn from(error: UmodeApiError) -> EcallError {
+        match error {
+            UmodeApiError::InvalidArgument => EcallError::Sbi(SbiError::InvalidParam),
+            _ => EcallError::Sbi(SbiError::Failed),
+        }
+    }
+}
+
+impl From<UmodeError> for EcallError {
+    fn from(error: UmodeError) -> EcallError {
+        match error {
+            UmodeError::Exec(ExecError::Umode(api_error)) => api_error.into(),
+            _ => EcallError::Sbi(SbiError::Failed),
         }
     }
 }
@@ -1575,7 +1592,6 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
                     evidence_format,
                     cert_addr_out,
                     cert_size as usize,
-                    active_pages,
                 )
                 .into(),
 
@@ -1637,7 +1653,6 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         Ok(0)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn guest_get_evidence(
         &self,
         csr_guest_addr: u64,
@@ -1646,11 +1661,14 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         _evidence_format: u64,
         certout_guest_addr: u64,
         certout_len: usize,
-        active_pages: &ActiveVmPages<T>,
     ) -> EcallResult<u64> {
         // Map CSR read-only.
-        let (csr_addr, _csr_mapping) =
-            self.map_guest_range_in_umode_slot(UmodeSlotId::A, csr_guest_addr, csr_len as u64, false)?;
+        let (csr_addr, _csr_mapping) = self.map_guest_range_in_umode_slot(
+            UmodeSlotId::A,
+            csr_guest_addr,
+            csr_len as u64,
+            false,
+        )?;
         // Map Output Certifical writable.
         let (certout_addr, _certout_mapping) = self.map_guest_range_in_umode_slot(
             UmodeSlotId::B,
@@ -1661,7 +1679,7 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
         // Gather measurement registers from the attestation manager and transform it in a array.
         let msmt_genarray = self.attestation_mgr().measurement_registers()?;
         let zero = [0u8; u_mode_api::cert::SHA384_LEN];
-        let mut msmt_regs = [zero; attestation::measurement::MSMT_REGISTERS];
+        let mut msmt_regs = [zero; attestation::MSMT_REGISTERS];
         for (i, r) in msmt_genarray.iter().enumerate() {
             msmt_regs[i].copy_from_slice(r.as_slice());
         }
@@ -1674,9 +1692,8 @@ impl<'a, T: GuestStagePagingMode> FinalizedVm<'a, T> {
             certout_addr,
             certout_len,
         };
-        let x = UmodeTask::send_req_with_shared_data(request, shared_data)
-            .map_err(|_| EcallError::Sbi(SbiError::Failed))?;
-        Ok(x)
+        // Send request to U-mode.
+        Ok(UmodeTask::send_req_with_shared_data(request, shared_data)?)
     }
 
     fn guest_extend_measurement(

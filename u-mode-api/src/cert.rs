@@ -1,3 +1,4 @@
+use attestation::MSMT_REGISTERS;
 use data_model::DataInit;
 
 /// CDI ID length.
@@ -17,7 +18,7 @@ pub type MeasurementRegisterSha384 = [u8; SHA384_LEN];
 #[derive(Clone, Copy, Debug)]
 pub struct GetEvidenceShared {
     /// Measurement registers in SHA-384. In `fwid` order.
-    pub msmt_regs: [MeasurementRegisterSha384; attestation::measurement::MSMT_REGISTERS],
+    pub msmt_regs: [MeasurementRegisterSha384; MSMT_REGISTERS],
     /// CDI Id.
     pub cdi_id: CdiId,
 }
