@@ -169,6 +169,22 @@ pub struct PageAddr<AS: AddressSpace> {
     addr: RawAddr<AS>,
 }
 
+/// Create a PageAddr from an aligned constant.
+///
+/// Usage example:
+///
+///     use riscv_pages::*;
+///
+///     let x = const_page_addr!(0x1000, PageSize::Size4k, SupervisorVirt::default());
+#[macro_export]
+macro_rules! const_page_addr {
+    ($addr: expr, $page_size: expr, $address_space: expr) => ({
+        static_assertions::const_assert!($page_size.is_aligned($addr));
+        // Unwrap okay: static assertion right above ensures aslignment.
+        PageAddr::with_alignment(RawAddr::new($addr, $address_space), PageSize::Size4k).unwrap();
+    })
+}
+
 /// A page-aligned address in the `SupervisorPhys` address space.
 pub type SupervisorPageAddr = PageAddr<SupervisorPhys>;
 /// A page-aligned address in a `GuestPhys` address space.
@@ -779,6 +795,13 @@ mod tests {
             PageSize::Size512G
         )
         .is_some());
+    }
+
+    #[test]
+    fn const_test() {
+        let _x = const_page_addr!(0x1000, PageSize::Size4k, SupervisorVirt::default());
+        let _x = const_page_addr!(0x200000, PageSize::Size2M, SupervisorVirt::default());
+        let _x = const_page_addr!(0x40000000, PageSize::Size1G, SupervisorVirt::default());
     }
 
     #[test]

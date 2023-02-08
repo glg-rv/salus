@@ -518,6 +518,9 @@ dependencies = [
 [[package]]
 name = "riscv_pages"
 version = "0.1.0"
+dependencies = [
+ "static_assertions",
+]
 
 [[package]]
 name = "riscv_regs"
