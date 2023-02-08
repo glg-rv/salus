@@ -19,11 +19,8 @@ use spin::RwLock;
 use typenum::{Unsigned, U32};
 
 use crate::{
-    measurement::{
-        MeasurementRegister, DYNAMIC_MSMT_REGISTERS, MSMT_REGISTERS, STATIC_MSMT_REGISTERS,
-        TVM_MSMT_REGISTERS,
-    },
-    Error, Result, TcgPcrIndex,
+    measurement::{MeasurementRegister, MeasurementRegisterDigest, TVM_MSMT_REGISTERS},
+    Error, Result, TcgPcrIndex, DYNAMIC_MSMT_REGISTERS, MSMT_REGISTERS, STATIC_MSMT_REGISTERS,
 };
 
 // TODO Get the SVN from the RoT
