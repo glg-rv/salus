@@ -21,7 +21,18 @@
 // | (unused 4Mb)            |
 // +-------------------------+ UMODE_INPUT_START
 // | Umode Input Area        |
-// +-------------------------+ +UMODE_INPUT_SIZE
+// +-------------------------+ +UMODE_INPUT_SIZE (UMODE_INPUT_END, UMODE_END)
+// | (unused 4Mb)            |
+// +-------------------------+ HYP_STACKBTM_MIN
+// | (unused)                |
+// +-------------------------+ HYP_STACKTOP - stack size [1]
+// | Hypervisor Stack        |
+// +-------------------------+ HYP_STACK_TOP (0xffff_ffff_ffff_f000)
+// | (unused 4k)             |
+// +-------------------------+ End of Address Space.
+//
+// [1]: BSP stack size is determined by the linker. The other CPUs have stack size of
+// `smp::PER_CPU_PAGES * PageSize::Size4k`.
 
 use riscv_pages::{PageAddr, PageSize, SupervisorVirt};
 use static_assertions::const_assert;
@@ -75,6 +86,17 @@ const_assert!(PageSize::Size4k.is_aligned(UMODE_INPUT_START));
 /// Size of the U-mode Input Region.
 pub const UMODE_INPUT_SIZE: u64 = 4 * 1024;
 const_assert!(PageSize::Size4k.is_aligned(UMODE_INPUT_SIZE));
+/// End of the U-mode Input Region.
+const UMODE_INPUT_END: u64 = UMODE_INPUT_START + UMODE_INPUT_SIZE;
+/// Last U-mode address.
+const UMODE_END: u64 = UMODE_INPUT_END;
+
+/// The lowest possible kernel stack address.
+pub const HYP_STACKBTM_MIN: u64 = UMODE_END + 4 * 1024 * 1024;
+/// Address of the hypervisor stack top.
+pub const HYP_STACKTOP: u64 = 0xffff_ffff_ffff_f000;
+/// Page address of the stack top.
+pub const HYP_STACKTOP_PAGE_ADDR: PageAddr<SupervisorVirt> = PageAddr::new_const::<HYP_STACKTOP>();
 
 // Returns true if `addr` is contained in the U-mode binary area.
 fn is_umode_binary_addr(addr: u64) -> bool {
