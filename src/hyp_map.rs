@@ -13,8 +13,8 @@ use riscv_page_tables::{
     FirstStageMapper, FirstStagePageTable, PagingMode, PteFieldBits, PteLeafPerms, Sv48,
 };
 use riscv_pages::{
-    InternalClean, Page, PageAddr, PageSize, RawAddr, SeqPageIter, SupervisorPageAddr,
-    SupervisorPhys, SupervisorVirt,
+    InternalClean, InternalDirty, Page, PageAddr, PageSize, RawAddr, SeqPageIter, SequentialPages,
+    SupervisorPageAddr, SupervisorPhys, SupervisorVirt,
 };
 use riscv_regs::{satp, sstatus, LocalRegisterCopy, ReadWriteable, SatpHelpers, CSR};
 use sync::Once;
@@ -59,6 +59,8 @@ pub enum Error {
     InvalidAddress,
     /// Page Fault while accessing U-mode memory.
     UmodePageFault(RawAddr<SupervisorVirt>, usize),
+    /// Stack overlaps with other regions.
+    InvalidStackSize(u64),
 }
 
 // Represents a virtual address region of the hypervisor created from the Hardware Memory Map.
@@ -320,6 +322,63 @@ impl UmodeInputRegion {
     // Clears the U-mode Input Region.
     fn clear(&mut self) {
         self.vslice.write_bytes(0);
+    }
+}
+
+/// Represents a hypervisor stack region.
+pub struct HypStackRegion {
+    vaddr: PageAddr<SupervisorVirt>,
+    paddr: PageAddr<SupervisorPhys>,
+    page_count: u64,
+}
+
+impl HypStackRegion {
+    fn new(stack_pages: SequentialPages<InternalDirty>) -> Result<Self, Error> {
+        let page_count = stack_pages.len();
+        let paddr = stack_pages.base();
+        let vaddr = HYP_STACKTOP_PAGE_ADDR
+            .checked_sub_pages(page_count)
+            .ok_or(Error::InvalidStackSize(page_count))?;
+        if vaddr.bits() < HYP_STACKBTM_MIN {
+            return Err(Error::InvalidStackSize(page_count));
+        }
+        Ok(HypStackRegion {
+            vaddr,
+            paddr,
+            page_count,
+        })
+    }
+
+    // Map hypervisor stack in current page-table.
+    fn map(&self, sv48: &FirstStagePageTable<Sv48>, hyp_mem: &mut HypPageAlloc) {
+        let pte_fields = PteFieldBits::leaf_with_perms(PteLeafPerms::RW);
+        // Unmap stack pages from the 1:1 map.
+        for _ in sv48
+            .unmap_range(
+                self.paddr.as_supervisor_virt(),
+                PageSize::Size4k,
+                self.page_count,
+            )
+            .unwrap()
+        {}
+        // Map stack pages at stack virtual address.
+        let mapper = sv48
+            .map_range(self.vaddr, PageSize::Size4k, self.page_count, &mut || {
+                hyp_mem.take_pages_for_hyp_state(1).into_iter().next()
+            })
+            .expect("Stack mapping failed");
+        for (virt, phys) in self
+            .vaddr
+            .iter_from()
+            .zip(self.paddr.iter_from())
+            .take(self.page_count as usize)
+        {
+            // Safety: we unmapped the stack pages from the 1:1 map, so no aliases have been created
+            // in this page table.
+            unsafe {
+                mapper.map_addr(virt, phys, pte_fields).unwrap();
+            }
+        }
     }
 }
 
