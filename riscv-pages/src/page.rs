@@ -134,6 +134,13 @@ impl<AS: AddressSpace> RawAddr<AS> {
         let addr = self.0.checked_add(increment)?;
         Some(Self(addr, self.1))
     }
+
+    /// Returns the address incremented by the given number of bytes.
+    /// Returns None if the result would underflow.
+    pub fn checked_decrement(&self, decrement: u64) -> Option<Self> {
+        let addr = self.0.checked_sub(decrement)?;
+        Some(Self(addr, self.1))
+    }
 }
 
 impl RawAddr<SupervisorPhys> {
@@ -293,10 +300,22 @@ impl<AS: AddressSpace> PageAddr<AS> {
         self.checked_add_pages_with_size(n, PageSize::Size4k)
     }
 
+    /// Subtracts `n` 4kB pages to the current address.
+    pub fn checked_sub_pages(&self, n: u64) -> Option<Self> {
+        self.checked_sub_pages_with_size(n, PageSize::Size4k)
+    }
+
     /// Adds `n` `page_size`-sized pages to the current address if the address is properly aligned.
     pub fn checked_add_pages_with_size(&self, n: u64, page_size: PageSize) -> Option<Self> {
         n.checked_mul(page_size as u64)
             .and_then(|inc| self.addr.checked_increment(inc))
+            .and_then(|addr| Self::with_alignment(addr, page_size))
+    }
+
+    /// Subtracts `n` `page_size`-sized pages to the current address if the address is properly aligned.
+    pub fn checked_sub_pages_with_size(&self, n: u64, page_size: PageSize) -> Option<Self> {
+        n.checked_mul(page_size as u64)
+            .and_then(|dec| self.addr.checked_decrement(dec))
             .and_then(|addr| Self::with_alignment(addr, page_size))
     }
 
