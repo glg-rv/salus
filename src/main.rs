@@ -314,10 +314,16 @@ fn check_vector_width() {
     CSR.sstatus.read_and_clear_bits(sstatus::vs::Dirty.value);
 }
 
+#[repr(C)]
+struct CpuLaunch {
+    satp: u64,
+    sp: u64,
+}
+
 /// The entry point for the test runner
 #[cfg(test)]
 #[no_mangle]
-extern "C" fn kernel_init(_hart_id: u64, _fdt_addr: u64) {
+extern "C" fn primary_init(_hart_id: u64, _fdt_addr: u64) -> CpuLaunch {
     setup_csrs();
     SbiConsoleV01::set_as_console();
 
@@ -329,6 +335,10 @@ extern "C" fn kernel_init(_hart_id: u64, _fdt_addr: u64) {
     poweroff();
 }
 
+#[cfg(test)]
+#[no_mangle]
+extern "C" fn primary_main() {}
+
 #[test_case]
 fn example_test() {
     println!("example test");
@@ -336,10 +346,11 @@ fn example_test() {
     println!("OK\n");
 }
 
-/// The entry point of the Rust part of the kernel.
+/// Rust Entry point for the bootstrap CPU. This runs on a 1:1 mapping. Bootstraps salus, starts
+/// secondary CPUs and builds a HOST VM.
 #[cfg(not(test))]
 #[no_mangle]
-extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
+extern "C" fn primary_init(hart_id: u64, fdt_addr: u64) -> CpuLaunch {
     // Reset CSRs to a sane state.
     setup_csrs();
 
@@ -518,11 +529,6 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
         PerCpu::set_cpu_page_table(CpuId::new(i), page_table);
     }
 
-    // Load the page-tables in this cpu.
-    let page_table = PerCpu::this_cpu().page_table();
-    CSR.satp.set(page_table.satp());
-    tlb::sfence_vma(None, None);
-
     // Find and initialize the IOMMU.
     match Iommu::probe_from(PcieRoot::get(), &mut || {
         hyp_mem.take_pages_for_host_state(1).into_iter().next()
@@ -540,10 +546,6 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
 
     // Initialize global Umode state.
     UmodeTask::init(umode_elf);
-    // Setup U-mode task for this CPU.
-    UmodeTask::setup_this_cpu().expect("Could not setup umode");
-    // Do a NOP request to the U-mode task to check it's functional in this CPU.
-    UmodeTask::nop().expect("U-mode not executing NOP");
 
     // Now load the host VM.
     let host = HostVmLoader::new(
@@ -563,6 +565,26 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
     smp::start_secondary_cpus();
 
     HOST_VM.call_once(|| host);
+
+    // For now, reset the stack at the top.
+    // Safe because we trust the linker placed these symbols correctly.
+    let sp = unsafe { core::ptr::addr_of!(_stack_end) as u64 };
+
+    // Return launch parameters for this CPU.
+    CpuLaunch {
+        satp: PerCpu::this_cpu().page_table().satp(),
+        sp,
+    }
+}
+
+/// Start salus on the bootstrap CPU. This is called once we switch to the hypervisor page-table.
+#[no_mangle]
+extern "C" fn primary_main() {
+    // Setup U-mode task for this CPU.
+    UmodeTask::setup_this_cpu().expect("Could not setup umode");
+    // Do a NOP request to the U-mode task to check it's functional in this CPU.
+    UmodeTask::nop().expect("U-mode not executing NOP");
+
     let cpu_id = PerCpu::this_cpu().cpu_id();
     HOST_VM.get().unwrap().run(cpu_id.raw() as u64);
     poweroff();
@@ -572,16 +594,17 @@ extern "C" fn kernel_init(hart_id: u64, fdt_addr: u64) {
 #[no_mangle]
 extern "C" fn secondary_init(hart_id: u64) {}
 
+#[cfg(test)]
+#[no_mangle]
+extern "C" fn secondary_main() {}
+
+/// Rust entry point for secondary CPUs. Initialize the current CPU and returns.
 #[cfg(not(test))]
 #[no_mangle]
-extern "C" fn secondary_init(hart_id: u64) {
+extern "C" fn secondary_init(hart_id: u64) -> CpuLaunch {
     setup_csrs();
 
     test_declare_pass!("secondary init", hart_id);
-    // Load the page-tables in the CPU.
-    let page_table = PerCpu::this_cpu().page_table();
-    CSR.satp.set(page_table.satp());
-    tlb::sfence_vma(None, None);
 
     let cpu_info = CpuInfo::get();
     if cpu_info.has_sstc() {
@@ -589,14 +612,23 @@ extern "C" fn secondary_init(hart_id: u64) {
     }
     Imsic::setup_this_cpu();
 
-    let me = PerCpu::this_cpu();
-    me.set_online();
+    PerCpu::this_cpu().set_online();
 
+    CpuLaunch {
+        satp: PerCpu::this_cpu().page_table().satp(),
+        sp: 0,
+    }
+}
+
+/// Start salus on secondary CPUs. This is called once we switch to the hypervisor page-table.
+#[cfg(not(test))]
+#[no_mangle]
+extern "C" fn secondary_main() {
     // Setup U-mode task for this CPU.
     UmodeTask::setup_this_cpu().expect("Could not setup umode");
     // Do a NOP request to the U-mode task to check it's functional in this CPU.
     UmodeTask::nop().expect("U-mode not executing NOP");
 
-    HOST_VM.wait().run(me.cpu_id().raw() as u64);
+    HOST_VM.wait().run(PerCpu::this_cpu().cpu_id().raw() as u64);
     poweroff();
 }
