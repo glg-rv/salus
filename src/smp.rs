@@ -6,7 +6,9 @@ use core::arch::asm;
 use core::cell::{RefCell, RefMut};
 use drivers::{imsic::Imsic, CpuId, CpuInfo};
 use page_tracking::HypPageAlloc;
-use riscv_pages::{PageSize, SupervisorPageAddr};
+use riscv_pages::{
+    InternalDirty, PageAddr, PageSize, RawAddr, SequentialPages, SupervisorPageAddr,
+};
 use riscv_regs::{sstatus, ReadWriteable, CSR};
 use s_mode_utils::print::*;
 use sbi_rs::api::state;
@@ -18,6 +20,8 @@ use crate::vm_id::VmIdTracker;
 
 // The secondary CPU entry point, defined in start.S.
 extern "C" {
+    static _stack_start: u8;
+    static _stack_end: u8;
     fn _secondary_start();
 }
 
@@ -30,10 +34,11 @@ pub struct PerCpu {
     page_table: HypPageTable,
     umode_task: Once<RefCell<UmodeTask>>,
     online: Once<bool>,
+    stack_top: u64,
 }
 
 /// The number of pages we allocate per CPU: the CPU's stack + it's `PerCpu` structure.
-const PER_CPU_PAGES: u64 = 8;
+const PER_CPU_PAGES: u64 = 0x80;
 
 /// The base address of the per-CPU memory region.
 static PER_CPU_BASE: Once<SupervisorPageAddr> = Once::new();
@@ -43,6 +48,9 @@ impl PerCpu {
     /// boot CPU's) per-CPU area is initialized and loaded into TP as well.
     pub fn init(boot_hart_id: u64, hyp_mem: &mut HypPageAlloc) {
         let cpu_info = CpuInfo::get();
+        let boot_cpu = cpu_info
+            .hart_id_to_cpu(boot_hart_id as u32)
+            .expect("Cannot find boot CPU ID");
 
         // Find somewhere to put the per-CPU memory.
         let total_size = PER_CPU_PAGES * cpu_info.num_cpus() as u64 * PageSize::Size4k as u64;
@@ -54,15 +62,45 @@ impl PerCpu {
         VmIdTracker::init();
 
         // Now initialize each PerCpu structure.
+        // Unwrap okay: PER_CPU_PAGES is non zero.
+        let mut pcpu_stacks =
+            pcpu_pages.into_chunks_iter(core::num::NonZeroU64::new(PER_CPU_PAGES).unwrap());
         for i in 0..cpu_info.num_cpus() {
             let cpu_id = CpuId::new(i);
+            // Unwrap okay. We allocated the area `with num_cpus() * PER_CPU_PAGES` pages.
+            let pcpu_stack = pcpu_stacks.next().unwrap();
+            // Boot CPU is special. Doesn't use the PCPU_BASE area as stack, only for the PCPU area.
+            // TODO: Do not allocate PCPU area for boot cpu.
+            let stack_pages = if cpu_id == boot_cpu {
+                Self::boot_cpu_stack()
+            } else {
+                // Change state from InternalClean to InternalDirty. Pages are clean but this is not
+                // important for the stack (in the boot CPU case, pages are dirty because the stack is
+                // in use).
+                // Safe because the chunk is composed by hypervisor pages owned by `pcpu_stack`.
+                unsafe {
+                    SequentialPages::<InternalDirty>::from_mem_range(
+                        pcpu_stack.base(),
+                        pcpu_stack.page_size(),
+                        pcpu_stack.len(),
+                    )
+                    .unwrap()
+                }
+            };
+            let stack_top = if cpu_id == boot_cpu {
+                crate::hyp_layout::HYP_STACKTOP
+            } else {
+                // Secondary CPUs have PerCpu structure at top of stack.
+                crate::hyp_layout::HYP_STACKTOP - core::mem::size_of::<PerCpu>() as u64
+            };
             let ptr = Self::ptr_for_cpu(cpu_id);
             let pcpu = PerCpu {
                 cpu_id,
                 vmid_tracker: RefCell::new(VmIdTracker::new()),
-                page_table: HypMap::get().new_page_table(hyp_mem),
+                page_table: HypMap::get().new_page_table(hyp_mem, stack_pages),
                 umode_task: Once::new(),
                 online: Once::new(),
+                stack_top,
             };
             // Safety: ptr is guaranteed to be properly aligned and point to valid memory owned by
             // PerCpu. No other CPUs are alive at this point, so it cannot be concurrently modified
@@ -72,7 +110,7 @@ impl PerCpu {
 
         // Load TP with the address of our PerCpu struct so that we're consistent with secondary
         // CPUs once they're brought up.
-        let my_tp = Self::ptr_for_cpu(cpu_info.hart_id_to_cpu(boot_hart_id as u32).unwrap()) as u64;
+        let my_tp = Self::ptr_for_cpu(boot_cpu) as u64;
         unsafe {
             // Safe since we're the only users of TP.
             asm!("mv tp, {rs}", rs = in(reg) my_tp)
@@ -80,6 +118,23 @@ impl PerCpu {
 
         let me = Self::this_cpu();
         me.set_online();
+    }
+
+    fn boot_cpu_stack() -> SequentialPages<InternalDirty> {
+        // Get the pages of the current stack as created by the linker.
+        // Safe because these are linker created variables.
+        let stack_start = unsafe { core::ptr::addr_of!(_stack_start) as u64 };
+        let stack_end = unsafe { core::ptr::addr_of!(_stack_end) as u64 };
+        let stack_startaddr = PageAddr::new(RawAddr::supervisor(stack_start))
+            .expect("_stack_start is not page aligned.");
+        let stack_endaddr =
+            PageAddr::new(RawAddr::supervisor(stack_end)).expect("_stack_end is not page aligned.");
+        // Safe because the pages in this range are in the `HypervisorImage` memory region and are only
+        // used for the boot cpu stack.
+        unsafe {
+            SequentialPages::from_page_range(stack_startaddr, stack_endaddr, PageSize::Size4k)
+                .unwrap()
+        }
     }
 
     /// Returns a pointer to the `PerCpu` for the given CPU.
@@ -117,6 +172,11 @@ impl PerCpu {
     /// Marks this CPU as online.
     pub fn set_online(&self) {
         self.online.call_once(|| true);
+    }
+
+    /// Returns the top of the stack for this CPU.
+    pub fn stack_top(&self) -> u64 {
+        self.stack_top
     }
 
     /// Set the CPU umode task (once). Must be called after `PerCpu::init()`.

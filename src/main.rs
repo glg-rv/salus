@@ -559,20 +559,22 @@ extern "C" fn primary_init(hart_id: u64, fdt_addr: u64) -> CpuLaunch {
 
     HOST_VM.call_once(|| host);
 
-    // For now, reset the stack at the top.
-    // Safe because we trust the linker placed these symbols correctly.
-    let sp = unsafe { core::ptr::addr_of!(_stack_end) as u64 };
-
     // Return launch parameters for this CPU.
+    let this_cpu = PerCpu::this_cpu();
     CpuLaunch {
-        satp: PerCpu::this_cpu().page_table().satp(),
-        sp,
+        satp: this_cpu.page_table().satp(),
+        sp: this_cpu.stack_top(),
     }
 }
 
 /// Start salus on the bootstrap CPU. This is called once we switch to the hypervisor page-table.
 #[no_mangle]
 extern "C" fn primary_main() {
+    let sp: u64;
+    // Safe since there is no memory access.
+    unsafe { core::arch::asm!("mv {rs}, sp", rs = out(reg) sp) };
+    println!("Salus on Boot CPU, stack at: {:x?}", sp);
+
     // Setup U-mode task for this CPU.
     UmodeTask::setup_this_cpu().expect("Could not setup umode");
     // Do a NOP request to the U-mode task to check it's functional in this CPU.
@@ -605,11 +607,10 @@ extern "C" fn secondary_init(hart_id: u64) -> CpuLaunch {
     }
     Imsic::setup_this_cpu();
 
-    PerCpu::this_cpu().set_online();
-
+    let this_cpu = PerCpu::this_cpu();
     CpuLaunch {
-        satp: PerCpu::this_cpu().page_table().satp(),
-        sp: 0,
+        satp: this_cpu.page_table().satp(),
+        sp: this_cpu.stack_top(),
     }
 }
 
@@ -622,6 +623,15 @@ extern "C" fn secondary_main() {
     // Do a NOP request to the U-mode task to check it's functional in this CPU.
     UmodeTask::nop().expect("U-mode not executing NOP");
 
-    HOST_VM.wait().run(PerCpu::this_cpu().cpu_id().raw() as u64);
+    let this_cpu = PerCpu::this_cpu();
+    let cpu_id = this_cpu.cpu_id().raw() as u64;
+    let sp: u64;
+    // Safe since there is no memory access.
+    unsafe { core::arch::asm!("mv {rs}, sp", rs = out(reg) sp) };
+    println!("Salus started on CPU #{}, stack at: {:x}", cpu_id, sp);
+
+    this_cpu.set_online();
+
+    HOST_VM.wait().run(cpu_id);
     poweroff();
 }

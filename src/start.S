@@ -51,11 +51,13 @@ _secondary_start:
     mv   tp, a1
     call secondary_init
     // a0 contains SATP value
-    // a1 contains stack pointer
+    // a1 contains stack pointer (and TP value)
     csrw satp, a0
     // Flush TLBs.
     sfence.vma
-    // Ignore SP for now.
+    // Copy new stack pointer. Since TP is stack based in secondary CPUs, update TP as well.
+    mv   sp, a1
+    mv   tp, a1
     call secondary_main
 wfi_loop:
     wfi
