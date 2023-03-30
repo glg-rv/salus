@@ -448,7 +448,7 @@ trait PteIndex {
 #[derive(Copy, Clone)]
 struct PageTableIndex<T: PagingMode> {
     index: u64,
-    level: PhantomData<T::Level>,
+    level: T::Level,
 }
 
 impl<T: PagingMode> PageTableIndex<T> {
@@ -456,10 +456,16 @@ impl<T: PagingMode> PageTableIndex<T> {
     fn from_addr(addr: u64, level: T::Level) -> Self {
         let addr_bit_mask = (1 << level.addr_width()) - 1;
         let index = (addr >> level.addr_shift()) & addr_bit_mask;
-        Self {
-            index,
-            level: PhantomData,
-        }
+        Self { index, level }
+    }
+
+    fn level(&self) -> T::Level {
+        self.level
+    }
+
+    #[allow(dead_code)]
+    fn iter(&self) -> PageTableIndexIter<T> {
+        PageTableIndexIter::from_index(self)
     }
 }
 
@@ -472,7 +478,7 @@ impl<T: PagingMode> PteIndex for PageTableIndex<T> {
 struct PageTableIndexIter<T: PagingMode> {
     index: u64,
     end: u64,
-    level: PhantomData<T::Level>,
+    level: T::Level,
 }
 
 impl<T: PagingMode> PageTableIndexIter<T> {
@@ -480,7 +486,15 @@ impl<T: PagingMode> PageTableIndexIter<T> {
         Self {
             index: 0,
             end: 1 << level.addr_width(),
-            level: PhantomData,
+            level,
+        }
+    }
+
+    fn from_index(start: &PageTableIndex<T>) -> Self {
+        Self {
+            index: start.index(),
+            end: 1 << start.level().addr_width(),
+            level: start.level(),
         }
     }
 }
@@ -494,7 +508,7 @@ impl<T: PagingMode> Iterator for PageTableIndexIter<T> {
             self.index += 1;
             Some(PageTableIndex {
                 index,
-                level: PhantomData,
+                level: self.level,
             })
         } else {
             None
