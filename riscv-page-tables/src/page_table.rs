@@ -607,7 +607,6 @@ impl<T: PagingMode> PageTableInner<T> {
     ///
     /// The caller must guarantee that app pages reference from `start_paddr` for `num_pages` are
     /// uniquely owned by the root `GuestStagePageTable`.
-    #[allow(dead_code)]
     pub unsafe fn map_contiguous_leaves(
         &mut self,
         start_vaddr: PageAddr<T::MappedAddressSpace>,
